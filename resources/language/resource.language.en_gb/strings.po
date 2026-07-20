@@ -1,0 +1,24 @@
+# Kodi Media Center language file
+# Addon Name: Smart Subtitles
+# Addon id: service.smartsubtitles
+# Addon Provider: primez-x
+
+msgid ""
+msgstr ""
+
+# Settings categories
+msgctxt "#32001"
+msgid "General"
+msgstr ""
+
+msgctxt "#32002"
+msgid "Enable Smart Subtitles"
+msgstr ""
+
+msgctxt "#32003"
+msgid "Track name keywords (comma-separated, case-insensitive)"
+msgstr ""
+
+msgctxt "#32004"
+msgid "Delay before selecting track (milliseconds)"
+msgstr ""
