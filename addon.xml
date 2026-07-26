@@ -1,16 +1,18 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="service.smartsubtitles" name="Smart Subtitles" version="0.3.0" provider-name="primez-x">
+<addon id="service.smartsubtitles" name="Smart Subtitles" version="0.4.0" provider-name="primez-x">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
     </requires>
     <extension point="xbmc.service" library="resources/lib/service_entry.py"/>
     <extension point="xbmc.addon.metadata">
         <summary lang="en_GB">Smart Subtitles</summary>
-        <description lang="en_GB">Automatically selects Signs/Songs subtitle tracks on episode transitions. Extends Kodi's forced_only mode to also pick up tracks named "signs" or "songs" that aren't flagged as forced in the container.</description>
+        <description lang="en_GB">Automatically selects preferred-language Signs/Songs subtitle tracks on episode transitions. Extends Kodi's forced_only mode to also pick up tracks named "signs" or "songs" that aren't flagged as forced in the container.</description>
         <platform>all</platform>
         <license>GPL-2.0-only</license>
         <source>https://github.com/primez-x/service.smartsubtitles</source>
-        <news>v0.3.0
+        <news>v0.4.0
+- Only auto-select tracks in the configured preferred subtitle languages (English by default). This prevents a similarly named Forced or Signs/Songs track in another language from overriding the intended subtitle, and disables an automatically selected non-preferred forced track.
+v0.3.0
 - Fix auto-select skipped on episode transitions. Kodi reports a stale `currentsubtitle.index` for tens of ms after onAVStarted (carry-over from the previous file), which fooled the 'don't override user choice' guard. The guard now also requires `subtitleenabled=true`, which is the reliable signal that Kodi has resolved the new file's subtitle state. When forced_only finds no flagged forced track on the new file, Kodi disables subtitles entirely — addon now correctly fires in that case.
 v0.2.0
 - Add 'forced' to default keywords so tracks named 'Forced' (e.g. anime release-group variants like 'Forced (freeka)', 'Forced (Doki)') are auto-selected even when the MKV container does not set the forced flag bit. Kodi's forced_only locale mode only matches the flag bit, not the track name, so authored 'Forced' tracks without the bit were being skipped.

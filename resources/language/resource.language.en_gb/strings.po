@@ -20,5 +20,5 @@ msgid "Track name keywords (comma-separated, case-insensitive)"
 msgstr ""
 
 msgctxt "#32004"
-msgid "Delay before selecting track (milliseconds)"
+msgid "Preferred subtitle languages (comma-separated; names or ISO 639 codes)"
 msgstr ""

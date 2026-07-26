@@ -14,6 +14,13 @@
                     <heading>32003</heading>
                 </control>
             </setting>
+            <setting id="preferred_languages" type="string" label="32004" help=""> <!-- Preferred languages; names or ISO 639 codes -->
+                <level>0</level>
+                <default>English</default>
+                <control type="edit" format="string">
+                    <heading>32004</heading>
+                </control>
+            </setting>
         </category>
     </section>
 </settings>
