@@ -19,6 +19,6 @@ msgctxt "#32003"
 msgid "Track name keywords (comma-separated, case-insensitive)"
 msgstr ""
 
-msgctxt "#32004"
-msgid "Preferred subtitle languages (comma-separated; names or ISO 639 codes)"
+msgctxt "#32005"
+msgid "Only select tracks in my preferred subtitle language (from Kodi settings)"
 msgstr ""

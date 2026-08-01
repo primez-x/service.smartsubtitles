@@ -7,18 +7,16 @@
                 <default>true</default>
                 <control type="toggle" />
             </setting>
+            <setting id="respect_language" type="boolean" label="32005" help=""> <!-- Only select tracks in my preferred subtitle language (from Kodi settings) -->
+                <level>0</level>
+                <default>true</default>
+                <control type="toggle" />
+            </setting>
             <setting id="keywords" type="string" label="32003" help=""> <!-- Track name keywords (comma-separated) -->
                 <level>0</level>
                 <default>signs,songs,sign,forced</default>
                 <control type="edit" format="string">
                     <heading>32003</heading>
-                </control>
-            </setting>
-            <setting id="preferred_languages" type="string" label="32004" help=""> <!-- Preferred languages; names or ISO 639 codes -->
-                <level>0</level>
-                <default>English</default>
-                <control type="edit" format="string">
-                    <heading>32004</heading>
                 </control>
             </setting>
         </category>
