@@ -12,6 +12,11 @@
                 <default>true</default>
                 <control type="toggle" />
             </setting>
+            <setting id="notify_selected" type="boolean" label="32006" help=""> <!-- Show notification when a track is selected -->
+                <level>0</level>
+                <default>true</default>
+                <control type="toggle" />
+            </setting>
             <setting id="keywords" type="string" label="32003" help=""> <!-- Track name keywords (comma-separated) -->
                 <level>0</level>
                 <default>signs,songs,sign,forced</default>

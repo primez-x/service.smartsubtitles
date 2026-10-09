@@ -5,13 +5,16 @@
 Extends Kodi's ``forced_only`` subtitle mode to also match tracks named
 "signs", "songs", or "forced" that aren't flagged with the forced bit in
 the MKV container. Language-aware: only selects tracks in the user's
-preferred subtitle language (sourced from Kodi's own
-``subtitles.languages`` setting — single source of truth, no separate
-addon setting to drift out of sync).
+preferred subtitle language, sourced from Kodi's own settings (single source
+of truth, no separate addon setting to drift out of sync): Kodi's
+``locale.subtitlelanguage`` ("Preferred subtitle language") when it names a
+real language, otherwise ``subtitles.languages`` ("Languages to download
+subtitles for"), otherwise the Kodi UI language.
 """
 from __future__ import absolute_import, division, unicode_literals
 
 import json
+import re
 
 import xbmc
 import xbmcgui
@@ -19,7 +22,8 @@ import xbmcgui
 
 # ISO 639-2 normalization fallback for common languages. Kodi's JSON-RPC
 # subtitle stream ``language`` field returns ISO 639-2 codes (eng, por, spa),
-# but Kodi's ``subtitles.languages`` setting holds display names ("English").
+# but Kodi's ``locale.subtitlelanguage`` and ``subtitles.languages`` settings
+# hold English display names ("English", "Portuguese (Brazil)").
 # xbmc.convertLanguage handles most of this, but is inconsistent with full
 # display names on some Kodi builds, so we seed common mappings here.
 _LANG_TO_ISO639_2 = {
@@ -49,9 +53,15 @@ _LANG_TO_ISO639_2 = {
     'vietnamese': 'vie', 'vi': 'vie', 'vie': 'vie',
 }
 
+# Special (non-language) values of Kodi's ``locale.subtitlelanguage``.
+_NON_LANGUAGE_SUBTITLE_PREFS = ('', 'original', 'default', 'forced_only', 'none')
+
 
 def _notify_selected(name):
-    """Show a toast notification confirming the subtitle selection."""
+    """Show a toast notification confirming the subtitle selection, unless
+    the user turned notifications off in the addon settings."""
+    if not _get_setting_bool('notify_selected', default=True):
+        return
     header = xbmc.getLocalizedString(287) or 'Subtitles'  # 287 = "Subtitles"
     xbmcgui.Dialog().notification(header, name, xbmcgui.NOTIFICATION_INFO, 3000)
 
@@ -128,6 +138,8 @@ def _to_iso639_2(language):
     if not isinstance(language, str):
         return ''
     value = language.strip().lower().replace('_', '-')
+    # Kodi language names may carry a region suffix, e.g. "Portuguese (Brazil)"
+    value = re.sub(r'\s*\(.*\)$', '', value)
     if not value:
         return ''
     base = value.split('-', 1)[0]
@@ -142,22 +154,38 @@ def _to_iso639_2(language):
     return _LANG_TO_ISO639_2.get(value, _LANG_TO_ISO639_2.get(base, base))
 
 
+def _get_global_setting(setting):
+    """Return the value of a Kodi (global) setting via JSON-RPC, or None."""
+    result = _jsonrpc('Settings.GetSettingValue', {'setting': setting})
+    return (result.get('result') or {}).get('value')
+
+
 def _get_preferred_language_codes():
     """Return a set of ISO 639-2 codes for the user's preferred subtitle
     languages. Sourced from Kodi's OWN settings so there is a single source
     of truth (no separate addon setting to drift):
 
-      1. ``subtitles.languages`` — Kodi UI: Player > Subtitles > Preferred
-         subtitle language. Holds display names like ["English"].
-      2. Fallback: Kodi UI locale (``xbmc.getLanguage``).
+      1. ``locale.subtitlelanguage`` — Kodi UI: Player > Language >
+         Preferred subtitle language. Holds an English language name such
+         as "English", or one of the special values ``original``,
+         ``default``, ``forced_only`` or ``none``, which are ignored.
+      2. ``subtitles.languages`` — Kodi UI: Player > Subtitles > Languages
+         to download subtitles for. Holds display names like ["English"].
+      3. Fallback: Kodi UI locale (``xbmc.getLanguage``).
 
     Returns an empty set if nothing could be determined.
     """
     codes = set()
-    # 1. subtitles.languages — the authoritative subtitle preference
-    result = _jsonrpc('Settings.GetSettingValue',
-                      {'setting': 'subtitles.languages'})
-    langs = (result.get('result') or {}).get('value') or []
+    # 1. locale.subtitlelanguage — the preferred subtitle language, when set
+    #    to an actual language (forced_only etc. carry no language info)
+    preferred = _get_global_setting('locale.subtitlelanguage')
+    if (isinstance(preferred, str)
+            and preferred.strip().lower() not in _NON_LANGUAGE_SUBTITLE_PREFS):
+        code = _to_iso639_2(preferred)
+        if code:
+            return {code}
+    # 2. subtitles.languages — the subtitle download languages
+    langs = _get_global_setting('subtitles.languages') or []
     if isinstance(langs, str):
         langs = [s.strip() for s in langs.split(',') if s.strip()]
     for name in langs:
@@ -166,7 +194,7 @@ def _get_preferred_language_codes():
             codes.add(code)
     if codes:
         return codes
-    # 2. Fallback: Kodi UI locale
+    # 3. Fallback: Kodi UI locale
     try:
         ui_code = xbmc.getLanguage(xbmc.ISO_639_2, False)
         if ui_code:

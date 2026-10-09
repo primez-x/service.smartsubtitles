@@ -181,5 +181,60 @@ class SelectionTests(unittest.TestCase):
         set_sub.assert_called_once_with(1, 0)
 
 
+class PreferredLanguageTests(unittest.TestCase):
+    def setUp(self):
+        self.subtitles = load_subtitles_module()
+
+    def _codes(self, settings, ui_language=''):
+        self.subtitles.xbmc.getLanguage = lambda _format, _region: ui_language
+        with mock.patch.object(self.subtitles, '_get_global_setting',
+                               side_effect=settings.get):
+            return self.subtitles._get_preferred_language_codes()
+
+    def test_uses_preferred_subtitle_language_first(self):
+        self.assertEqual({'ita'}, self._codes({
+            'locale.subtitlelanguage': 'Italian',
+            'subtitles.languages': ['English'],
+        }))
+
+    def test_preferred_language_with_region_suffix(self):
+        self.assertEqual({'por'}, self._codes({
+            'locale.subtitlelanguage': 'Portuguese (Brazil)',
+        }))
+
+    def test_special_values_fall_back_to_download_languages(self):
+        for special in ('original', 'default', 'forced_only', 'none', ''):
+            self.assertEqual({'eng', 'spa'}, self._codes({
+                'locale.subtitlelanguage': special,
+                'subtitles.languages': ['English', 'Spanish'],
+            }), special)
+
+    def test_falls_back_to_ui_language(self):
+        self.assertEqual({'eng'}, self._codes({
+            'locale.subtitlelanguage': 'forced_only',
+            'subtitles.languages': [],
+        }, ui_language='ENG'))
+
+
+class NotificationSettingTests(unittest.TestCase):
+    def setUp(self):
+        self.subtitles = load_subtitles_module()
+        self.calls = []
+        calls = self.calls
+        self.subtitles.xbmcgui.NOTIFICATION_INFO = 0
+        self.subtitles.xbmcgui.Dialog = lambda: types.SimpleNamespace(
+            notification=lambda *args: calls.append(args))
+
+    def test_notifies_by_default(self):
+        with mock.patch.object(self.subtitles, '_get_setting', return_value=''):
+            self.subtitles._notify_selected('English (Forced)')
+        self.assertEqual(1, len(self.calls))
+
+    def test_notification_can_be_disabled(self):
+        with mock.patch.object(self.subtitles, '_get_setting', return_value='false'):
+            self.subtitles._notify_selected('English (Forced)')
+        self.assertEqual([], self.calls)
+
+
 if __name__ == '__main__':
     unittest.main()

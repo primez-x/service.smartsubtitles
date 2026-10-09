@@ -22,3 +22,7 @@ msgstr ""
 msgctxt "#32005"
 msgid "Only select tracks in my preferred subtitle language (from Kodi settings)"
 msgstr ""
+
+msgctxt "#32006"
+msgid "Show notification when a track is selected"
+msgstr ""
