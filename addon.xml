@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="service.smartsubtitles" name="Smart Subtitles" version="0.5.2" provider-name="primez-x">
+<addon id="service.smartsubtitles" name="Smart Subtitles" version="0.5.3" provider-name="primez-x">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
     </requires>
@@ -10,7 +10,12 @@
         <platform>all</platform>
         <license>GPL-2.0-only</license>
         <source>https://github.com/primez-x/service.smartsubtitles</source>
-        <news>v0.5.2
+        <news>v0.5.3
+- Prefer tracks Kodi flags as forced, and never turn off Kodi's subtitle when no better match exists.
+- Match keywords as whole words and skip full-dialogue tracks ("Full Subtitles (Dialogue + Signs &amp; Songs)", "Designed by", "Non-Forced" no longer match).
+- forced_only users with a non-English Kodi UI keep their own-language forced track.
+- Warn once in the log if an older PlexKodiConnect would override the selection.
+v0.5.2
 - Add Claude Code project settings (not packaged).
 v0.5.1
 - Preferred language now comes from Kodi's ``locale.subtitlelanguage`` ("Preferred subtitle language") when it is set to an actual language. Special values (original, default, forced_only, none) fall back to ``subtitles.languages`` ("Languages to download subtitles for"), then to the Kodi UI language. Region suffixes such as "Portuguese (Brazil)" are normalized.

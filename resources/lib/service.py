@@ -5,6 +5,7 @@ from __future__ import absolute_import, division, unicode_literals
 import xbmc
 
 from player import SmartSubtitlesPlayer
+from subtitles import warn_plexkodiconnect_interop
 
 
 class SmartSubtitlesMonitor(xbmc.Monitor):
@@ -15,6 +16,7 @@ class SmartSubtitlesMonitor(xbmc.Monitor):
         self.player = SmartSubtitlesPlayer()
         xbmc.Monitor.__init__(self)
         xbmc.log('Smart Subtitles: service started', xbmc.LOGINFO)
+        warn_plexkodiconnect_interop()
 
     def run(self):
         """Main service loop. Blocks until Kodi requests abort."""

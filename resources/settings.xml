@@ -19,7 +19,7 @@
             </setting>
             <setting id="keywords" type="string" label="32003" help=""> <!-- Track name keywords (comma-separated) -->
                 <level>0</level>
-                <default>signs,songs,sign,forced</default>
+                <default>signs,songs,forced</default>
                 <control type="edit" format="string">
                     <heading>32003</heading>
                 </control>

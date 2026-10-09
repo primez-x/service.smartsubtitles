@@ -2,9 +2,10 @@
 # GNU General Public License v2.0 (see COPYING or https://www.gnu.org/licenses/gpl-2.0.html)
 """Smart Subtitles — auto-select preferred-language Signs/Songs/Forced tracks.
 
-Extends Kodi's ``forced_only`` subtitle mode to also match tracks named
-"signs", "songs", or "forced" that aren't flagged with the forced bit in
-the MKV container. Language-aware: only selects tracks in the user's
+Extends Kodi's ``forced_only`` subtitle mode: picks the preferred-language
+track with Kodi's forced flag, or else one named "signs", "songs", or
+"forced" (whole words) that isn't flagged with the forced bit in the MKV
+container. Language-aware: only selects tracks in the user's
 preferred subtitle language, sourced from Kodi's own settings (single source
 of truth, no separate addon setting to drift out of sync): Kodi's
 ``locale.subtitlelanguage`` ("Preferred subtitle language") when it names a
@@ -56,6 +57,13 @@ _LANG_TO_ISO639_2 = {
 # Special (non-language) values of Kodi's ``locale.subtitlelanguage``.
 _NON_LANGUAGE_SUBTITLE_PREFS = ('', 'original', 'default', 'forced_only', 'none')
 
+# PlexKodiConnect re-applies Plex's own subtitle choice a few seconds after
+# playback starts unless its ``subtitleStreamPick`` setting is '1'. From
+# 3.12.60 on it leaves the choice to this add-on when it is enabled.
+_PKC_ADDON_ID = 'plugin.video.plexkodiconnect'
+_PKC_DEFERS_VERSION = (3, 12, 60)
+_pkc_warning_checked = False
+
 
 def _notify_selected(name):
     """Show a toast notification confirming the subtitle selection, unless
@@ -64,6 +72,32 @@ def _notify_selected(name):
         return
     header = xbmc.getLocalizedString(287) or 'Subtitles'  # 287 = "Subtitles"
     xbmcgui.Dialog().notification(header, name, xbmcgui.NOTIFICATION_INFO, 3000)
+
+
+def warn_plexkodiconnect_interop():
+    """Log a one-time warning when PlexKodiConnect is enabled with its
+    subtitle stream pick set to Plex ('0'): PKC will then overwrite the
+    track chosen here. Informational only; behaviour does not change."""
+    global _pkc_warning_checked
+    if _pkc_warning_checked:
+        return
+    _pkc_warning_checked = True
+    try:
+        if not xbmc.getCondVisibility('System.AddonIsEnabled(%s)' % _PKC_ADDON_ID):
+            return
+        import xbmcaddon
+        pkc = xbmcaddon.Addon(_PKC_ADDON_ID)
+        pick = pkc.getSetting('subtitleStreamPick')
+        version = tuple(int(part) for part in
+                        pkc.getAddonInfo('version').split('.')[:3])
+    except Exception:
+        return
+    if pick == '0' and version < _PKC_DEFERS_VERSION:
+        xbmc.log('Smart Subtitles: PlexKodiConnect is enabled with its '
+                 'subtitle stream pick set to Plex (subtitleStreamPick=0); it '
+                 're-applies Plex\'s subtitle choice a few seconds after '
+                 'playback starts and may override this addon\'s selection',
+                 xbmc.LOGWARNING)
 
 
 def _get_setting(key):
@@ -120,16 +154,82 @@ def _disable_subtitles(playerid):
     _jsonrpc('Player.SetSubtitle', {'playerid': playerid, 'subtitle': 'off'})
 
 
+DEFAULT_KEYWORDS = 'signs,songs,forced'
+
+# Keywords in the "signs/songs" family. A name matching one of these ranks
+# above a name matching any other keyword (e.g. "forced").
+_SIGNS_SONGS_KEYWORDS = ('sign', 'signs', 'song', 'songs')
+
+# "Non-Forced" / "non forced" / "NonForced" must never count as "forced".
+_NON_FORCED_RE = re.compile(r'\bnon[\s_.-]*forced\b')
+# Full dialogue tracks that merely mention signs/songs, e.g.
+# "Full Subtitles (Dialogue + Signs & Songs)", are not signs/songs tracks.
+_FULL_TRACK_RE = re.compile(r'\b(?:full|dialog(?:ue)?)\b')
+_FORCED_WORD_RE = re.compile(r'\bforced\b')
+
+# Candidate ranks (lower wins; ties go to the earlier stream).
+RANK_FORCED_FLAG = 0   # Kodi's ``isforced`` stream flag
+RANK_SIGNS_SONGS = 1   # name matches a signs/songs keyword
+RANK_KEYWORD = 2       # name matches any other keyword
+
+
 def _get_keywords():
-    raw = _get_setting('keywords') or 'signs,songs,sign,forced'
+    raw = _get_setting('keywords') or DEFAULT_KEYWORDS
     return [k.strip().lower() for k in raw.split(',') if k.strip()]
 
 
-def _matches_keywords(name, keywords):
+def _keyword_pattern(keyword):
+    """Whole-word regex for a keyword. "sign"/"signs" and "song"/"songs"
+    match both singular and plural; everything else matches as-is, so
+    "sign" no longer matches "Designed" and "forced" no longer matches
+    "Unforced"."""
+    if keyword in ('sign', 'signs'):
+        body = r'signs?'
+    elif keyword in ('song', 'songs'):
+        body = r'songs?'
+    else:
+        body = re.escape(keyword)
+    # Lookarounds instead of \b so keywords like "[forced]" still work.
+    return re.compile(r'(?<!\w)' + body + r'(?!\w)')
+
+
+def _clean_name(name):
+    """Lowercase a track name and blank out "non-forced" phrases."""
     if not name:
-        return False
-    name_lower = name.lower()
-    return any(kw in name_lower for kw in keywords)
+        return ''
+    return _NON_FORCED_RE.sub(' ', name.lower())
+
+
+def _is_full_track(clean_name):
+    """True for full-dialogue tracks ("Full", "Dialogue") that don't also
+    say they are forced (e.g. "Forced (foreign dialogue)" is kept)."""
+    return bool(_FULL_TRACK_RE.search(clean_name)
+                and not _FORCED_WORD_RE.search(clean_name))
+
+
+def _keyword_rank(clean_name, keywords):
+    """Best (lowest) rank of any keyword matching the cleaned name, or None."""
+    best = None
+    for kw in keywords:
+        if _keyword_pattern(kw).search(clean_name):
+            rank = RANK_SIGNS_SONGS if kw in _SIGNS_SONGS_KEYWORDS else RANK_KEYWORD
+            if best is None or rank < best:
+                best = rank
+    return best
+
+
+def _candidate_rank(stream, keywords):
+    """Rank a subtitle stream as a Signs/Songs/Forced candidate, or None.
+
+    Kodi's ``isforced`` flag is the strongest signal, then names that are
+    signs/songs tracks, then any other keyword match. A track named as a
+    full dialogue track is never a candidate, whatever its flag says."""
+    clean = _clean_name(stream.get('name', ''))
+    if _is_full_track(clean):
+        return None
+    if stream.get('isforced'):
+        return RANK_FORCED_FLAG
+    return _keyword_rank(clean, keywords)
 
 
 def _to_iso639_2(language):
@@ -160,31 +260,52 @@ def _get_global_setting(setting):
     return (result.get('result') or {}).get('value')
 
 
-def _get_preferred_language_codes():
-    """Return a set of ISO 639-2 codes for the user's preferred subtitle
-    languages. Sourced from Kodi's OWN settings so there is a single source
-    of truth (no separate addon setting to drift):
+def _get_ui_language_code():
+    """ISO 639-2 code of the Kodi UI language, or ''."""
+    try:
+        return _to_iso639_2(xbmc.getLanguage(xbmc.ISO_639_2, False))
+    except Exception:
+        return ''
+
+
+def _get_preferred_languages():
+    """Return ``(codes, authoritative)``: two sets of ISO 639-2 codes for the
+    user's preferred subtitle languages. Sourced from Kodi's OWN settings so
+    there is a single source of truth (no separate addon setting to drift):
 
       1. ``locale.subtitlelanguage`` — Kodi UI: Player > Language >
          Preferred subtitle language. Holds an English language name such
          as "English", or one of the special values ``original``,
-         ``default``, ``forced_only`` or ``none``, which are ignored.
+         ``default``, ``forced_only`` or ``none``. With ``forced_only`` the
+         Kodi UI language is also preferred (see below).
       2. ``subtitles.languages`` — Kodi UI: Player > Subtitles > Languages
          to download subtitles for. Holds display names like ["English"].
+         Kodi pre-fills this (usually with English), so it is a weak
+         signal: these languages are used to pick a track when none is
+         active, but never to replace a forced track Kodi chose itself.
       3. Fallback: Kodi UI locale (``xbmc.getLanguage``).
 
-    Returns an empty set if nothing could be determined.
+    ``codes`` is every preferred language; ``authoritative`` is the subset
+    that did NOT come only from the download-language list (it may be empty).
+    Both are empty if nothing could be determined.
     """
-    codes = set()
     # 1. locale.subtitlelanguage — the preferred subtitle language, when set
-    #    to an actual language (forced_only etc. carry no language info)
+    #    to an actual language
     preferred = _get_global_setting('locale.subtitlelanguage')
-    if (isinstance(preferred, str)
-            and preferred.strip().lower() not in _NON_LANGUAGE_SUBTITLE_PREFS):
+    pref_value = preferred.strip().lower() if isinstance(preferred, str) else ''
+    if pref_value not in _NON_LANGUAGE_SUBTITLE_PREFS:
         code = _to_iso639_2(preferred)
         if code:
-            return {code}
+            return {code}, {code}
+    # forced_only carries no language itself; Kodi's forced pick is for the
+    # user's own language, so the UI language counts as preferred.
+    authoritative = set()
+    if pref_value == 'forced_only':
+        ui_code = _get_ui_language_code()
+        if ui_code:
+            authoritative.add(ui_code)
     # 2. subtitles.languages — the subtitle download languages
+    codes = set(authoritative)
     langs = _get_global_setting('subtitles.languages') or []
     if isinstance(langs, str):
         langs = [s.strip() for s in langs.split(',') if s.strip()]
@@ -193,15 +314,18 @@ def _get_preferred_language_codes():
         if code:
             codes.add(code)
     if codes:
-        return codes
+        return codes, authoritative
     # 3. Fallback: Kodi UI locale
-    try:
-        ui_code = xbmc.getLanguage(xbmc.ISO_639_2, False)
-        if ui_code:
-            codes.add(ui_code.lower())
-    except Exception:
-        pass
-    return codes
+    ui_code = _get_ui_language_code()
+    if ui_code:
+        return {ui_code}, {ui_code}
+    return set(), set()
+
+
+def _get_preferred_language_codes():
+    """Return the set of ISO 639-2 codes for the user's preferred subtitle
+    languages (see ``_get_preferred_languages``)."""
+    return _get_preferred_languages()[0]
 
 
 def _stream_for_index(streams, index):
@@ -239,11 +363,15 @@ def select_signs_songs_track():
         return 'retry'
 
     respect_lang = _get_setting_bool('respect_language', default=True)
-    preferred = _get_preferred_language_codes() if respect_lang else set()
+    if respect_lang:
+        preferred, authoritative = _get_preferred_languages()
+    else:
+        preferred, authoritative = set(), set()
     if respect_lang and not preferred:
         xbmc.log('Smart Subtitles: could not determine preferred subtitle '
                  'language from Kodi settings — language filter inactive',
                  xbmc.LOGWARNING)
+    lang_filter = preferred if respect_lang else set()
 
     keywords = _get_keywords()
 
@@ -254,53 +382,76 @@ def select_signs_songs_track():
     # resolve to a real stream in THIS file's list, treat it as unresolved.
     current_index = current.get('index')
     current_stream = _stream_for_index(streams, current_index)
+    replacing = False
 
     if sub_enabled and current_stream is not None:
         current_lang = _to_iso639_2(current_stream.get('language', ''))
-        in_preferred = (not (respect_lang and preferred)) or current_lang in preferred
+        in_preferred = not lang_filter or current_lang in lang_filter
         if in_preferred:
             xbmc.log('Smart Subtitles: subtitle already active in preferred '
                      'language (index=%s, lang=%s), not overriding'
                      % (current_index, current_lang), xbmc.LOGINFO)
             return 'skip'
         # Current track is active but NOT in a preferred language.
-        # If it's forced-flagged, Kodi's forced_only auto-picked it (first
-        # forced by stream index, regardless of language — e.g. Portuguese
-        # (Forced) at idx 0 on a multi-language anime mux). That is not a
-        # user choice — disable it so we can try to find a preferred match.
         # If it's NOT forced-flagged, it may be a deliberate user choice on
         # this file — respect it.
-        if current_stream.get('isforced'):
-            xbmc.log('Smart Subtitles: disabling non-preferred forced '
-                     'subtitle (index=%s, lang=%s) auto-picked by Kodi'
-                     % (current_index, current_lang), xbmc.LOGINFO)
-            _disable_subtitles(playerid)
-        else:
+        if not current_stream.get('isforced'):
             xbmc.log('Smart Subtitles: non-preferred non-forced subtitle '
                      'active (index=%s, lang=%s), respecting as user choice'
                      % (current_index, current_lang), xbmc.LOGINFO)
             return 'skip'
+        # It's forced-flagged: Kodi's forced_only auto-picked it (first
+        # forced by stream index, regardless of language — e.g. Portuguese
+        # (Forced) at idx 0 on a multi-language anime mux). Replace it, but
+        # only with a track in a language that did not come solely from
+        # Kodi's pre-filled download-language list.
+        if not authoritative:
+            xbmc.log('Smart Subtitles: forced subtitle (index=%s, lang=%s) '
+                     'picked by Kodi; preferred languages %s come only from '
+                     'the subtitle download languages, not overriding'
+                     % (current_index, current_lang, sorted(preferred)),
+                     xbmc.LOGINFO)
+            return 'skip'
+        lang_filter = authoritative
+        replacing = True
 
-    # --- Scan for a keyword match in a preferred language ---
+    # --- Scan for the best candidate in a preferred language ---
     xbmc.log('Smart Subtitles: scanning %d streams (preferred=%s, keywords=%s)'
-             % (len(streams), sorted(preferred) if preferred else 'any',
+             % (len(streams), sorted(lang_filter) if lang_filter else 'any',
                 keywords), xbmc.LOGINFO)
-    for stream in streams:
+    best = None
+    for position, stream in enumerate(streams):
         name = stream.get('name', '')
         index = stream.get('index')
         stream_lang = _to_iso639_2(stream.get('language', ''))
-        xbmc.log('Smart Subtitles: stream[%s] lang=%s name=%r'
-                 % (index, stream_lang or stream.get('language'), name),
+        rank = _candidate_rank(stream, keywords)
+        xbmc.log('Smart Subtitles: stream[%s] lang=%s name=%r forced=%s rank=%s'
+                 % (index, stream_lang or stream.get('language'), name,
+                    bool(stream.get('isforced')), rank),
                  xbmc.LOGDEBUG)
-        if respect_lang and preferred and stream_lang not in preferred:
+        if lang_filter and stream_lang not in lang_filter:
             continue
-        if _matches_keywords(name, keywords):
-            xbmc.log('Smart Subtitles: SELECTING index=%d lang=%s name=%s'
-                     % (index, stream_lang, name), xbmc.LOGINFO)
-            _set_subtitle(playerid, index)
-            _notify_selected(name)
-            return 'selected'
+        if rank is None:
+            continue
+        if best is None or (rank, position) < best[:2]:
+            best = (rank, position, stream, stream_lang)
 
-    xbmc.log('Smart Subtitles: no matching track in preferred languages '
-             'found (keywords=%s)' % keywords, xbmc.LOGINFO)
-    return 'no_match'
+    if best is None:
+        # Never leave the user with less than Kodi selected.
+        xbmc.log('Smart Subtitles: no matching track in preferred languages '
+                 'found (keywords=%s), leaving subtitles as they are'
+                 % keywords, xbmc.LOGINFO)
+        return 'no_match'
+
+    _rank, _position, stream, stream_lang = best
+    index = stream.get('index')
+    name = stream.get('name', '')
+    if replacing:
+        xbmc.log('Smart Subtitles: replacing non-preferred forced subtitle '
+                 '(index=%s) auto-picked by Kodi' % current_index, xbmc.LOGINFO)
+        _disable_subtitles(playerid)
+    xbmc.log('Smart Subtitles: SELECTING index=%s lang=%s name=%s'
+             % (index, stream_lang, name), xbmc.LOGINFO)
+    _set_subtitle(playerid, index)
+    _notify_selected(name or stream_lang or str(index))
+    return 'selected'
