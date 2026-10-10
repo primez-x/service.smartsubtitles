@@ -62,7 +62,8 @@ class SelectionTests(unittest.TestCase):
         self.subtitles = load_subtitles_module()
 
     def _run(self, streams, current, sub_enabled, preferred={'eng'},
-             respect_lang=True, keywords=('forced',), authoritative=None):
+             respect_lang=True, keywords=('forced',), authoritative=None,
+             should_stop=None):
         """Helper: run select_signs_songs_track with common mocks.
         ``authoritative`` defaults to ``preferred`` (i.e. the preference did
         not come only from Kodi's download-language list)."""
@@ -82,10 +83,22 @@ class SelectionTests(unittest.TestCase):
                 mock.patch.object(self.subtitles, '_disable_subtitles') as dis_sub, \
                 mock.patch.object(self.subtitles, '_notify_selected'):
             return (
-                self.subtitles.select_signs_songs_track(),
+                self.subtitles.select_signs_songs_track(should_stop),
                 set_sub,
                 dis_sub,
             )
+
+    def test_changes_nothing_once_the_file_is_no_longer_playing(self):
+        streams = [
+            {'index': 0, 'language': 'por', 'name': 'Brazilian (Forced)',
+             'isforced': True},
+            {'index': 2, 'language': 'eng', 'name': 'Forced', 'isforced': True},
+        ]
+        result, set_sub, dis_sub = self._run(streams, {'index': 0}, True,
+                                             should_stop=lambda: True)
+        self.assertEqual('cancelled', result)
+        set_sub.assert_not_called()
+        dis_sub.assert_not_called()
 
     def test_selects_english_forced_when_portuguese_comes_first(self):
         """The JJK bug: Portuguese (Forced) at idx 0, English Forced at idx 2.

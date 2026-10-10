@@ -4,13 +4,25 @@ from __future__ import absolute_import, division, unicode_literals
 
 import threading
 import time
+import traceback
 
 import xbmc
+import xbmcgui
 
 from subtitles import select_signs_songs_track
 
 RETRY_WINDOW = 2.0    # seconds to keep retrying while streams enumerate
 RETRY_INTERVAL = 0.25  # seconds between attempts
+# Home-window property "<result>|<playing file>" read by PlexKodiConnect: it
+# applies the Plex subtitle choice itself unless the result is final here.
+RESULT_PROPERTY = 'SmartSubtitles.Result'
+
+
+def _publish_result(result, playing_file):
+    try:
+        xbmcgui.Window(10000).setProperty(RESULT_PROPERTY, '%s|%s' % (result, playing_file or ''))
+    except Exception:  # pylint: disable=broad-except
+        pass
 
 
 class SmartSubtitlesPlayer(xbmc.Player):
@@ -56,22 +68,46 @@ class SmartSubtitlesPlayer(xbmc.Player):
         monitor = xbmc.Monitor()
         deadline = time.monotonic() + RETRY_WINDOW
         attempts = 0
+        skips = 0
+        _publish_result('pending', playing_file)
+
+        def should_stop():
+            return self._should_stop(cancel, monitor, playing_file)
+
         while time.monotonic() < deadline:
-            if self._should_stop(cancel, monitor, playing_file):
+            if should_stop():
                 xbmc.log('Smart Subtitles: selection cancelled after %d attempt(s)'
                          % attempts, xbmc.LOGINFO)
                 return
             attempts += 1
-            result = select_signs_songs_track()
-            if result != 'retry':
+            try:
+                result = select_signs_songs_track(should_stop)
+            except Exception:  # pylint: disable=broad-except
+                xbmc.log('Smart Subtitles: selection failed:\n%s' % traceback.format_exc(),
+                         xbmc.LOGERROR)
+                _publish_result('error', playing_file)
+                return
+            if result == 'cancelled':
+                xbmc.log('Smart Subtitles: selection cancelled after %d attempt(s)'
+                         % attempts, xbmc.LOGINFO)
+                return
+            # Right after onAVStarted Kodi can still report the previous
+            # file's subtitle, which on the next episode of the same release
+            # resolves to a valid stream: only a repeated 'skip' is final.
+            skips = skips + 1 if result == 'skip' else 0
+            if result not in ('retry', 'skip') or skips >= 2:
                 xbmc.log('Smart Subtitles: selection finished after %d attempt(s) (%s)' % (
                     attempts, result), xbmc.LOGINFO)
+                _publish_result(result, playing_file)
                 return
             if cancel.wait(RETRY_INTERVAL):
                 xbmc.log('Smart Subtitles: selection cancelled after %d attempt(s)'
                          % attempts, xbmc.LOGINFO)
                 return
-        xbmc.log('Smart Subtitles: no streams available after %d attempts' % attempts, xbmc.LOGINFO)
+        result = 'skip' if skips else 'no_streams'
+        xbmc.log('Smart Subtitles: no final result after %d attempts (%s)'
+                 % (attempts, result), xbmc.LOGINFO)
+        _publish_result(result, playing_file)
 
     def onPlayBackStopped(self):  # pylint: disable=invalid-name
         self._cancel_timer()

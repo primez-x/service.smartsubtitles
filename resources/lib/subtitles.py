@@ -338,8 +338,11 @@ def _stream_for_index(streams, index):
     return None
 
 
-def select_signs_songs_track():
+def select_signs_songs_track(should_stop=None):
     """Main entry point. Called on playback start.
+
+    should_stop, when given, is checked right before subtitles are changed so
+    an attempt for a file that is no longer playing never touches the next one.
 
     Returns:
       'selected'  — found and selected a matching track
@@ -348,6 +351,7 @@ def select_signs_songs_track():
       'no_player' — no active video player
       'skip'      — user/Kodi already has a preferred-language subtitle active
       'retry'     — no streams available yet (caller should retry)
+      'cancelled' — should_stop() turned true before anything was changed
     """
     if not _get_setting_bool('enabled'):
         xbmc.log('Smart Subtitles: disabled, skipping', xbmc.LOGINFO)
@@ -446,6 +450,8 @@ def select_signs_songs_track():
     _rank, _position, stream, stream_lang = best
     index = stream.get('index')
     name = stream.get('name', '')
+    if should_stop is not None and should_stop():
+        return 'cancelled'
     if replacing:
         xbmc.log('Smart Subtitles: replacing non-preferred forced subtitle '
                  '(index=%s) auto-picked by Kodi' % current_index, xbmc.LOGINFO)
