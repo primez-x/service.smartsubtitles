@@ -1,0 +1,28 @@
+name: Publish check
+
+# Same rules as the .githooks/pre-push hook and the Primez repository publish:
+# addon.xml version above the published one, a news entry naming it, tests pass.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  publish-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: python3 -m pip install --disable-pip-version-check pytest polib requests
+
+      - name: Check publish rules
+        run: python3 .githooks/publish_check.py ci

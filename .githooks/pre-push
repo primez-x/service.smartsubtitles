@@ -1,0 +1,4 @@
+#!/bin/sh
+# Primez publish rules (version bump, news entry, tests): see publish_check.py.
+# Enabled with: git config core.hooksPath .githooks
+exec python3 "$(git rev-parse --show-toplevel)/.githooks/publish_check.py" pre-push "$@"
