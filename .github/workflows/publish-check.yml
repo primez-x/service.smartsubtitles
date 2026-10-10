@@ -16,6 +16,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The pushed range is compared with the branch tip before the push
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -25,4 +28,6 @@ jobs:
         run: python3 -m pip install --disable-pip-version-check pytest polib requests
 
       - name: Check publish rules
+        env:
+          PRIMEZ_BEFORE_SHA: ${{ github.event.before }}
         run: python3 .githooks/publish_check.py ci

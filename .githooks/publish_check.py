@@ -8,7 +8,12 @@ repository publish (kodi.addons ``tools/build_repository.py``) applies, so an
 update is rejected before it is pushed instead of failing the publish:
 
 * the root ``addon.xml`` parses and has a dot-separated numeric version,
-* that version is greater than the one it replaces,
+* that version is greater than the one it replaces, and is exactly one step
+  above it: one component +1 and every component to its right reset to 0,
+  with the same number of components (see VERSIONING.md in kodi.addons for
+  which component to raise). A deliberate jump, e.g. adopting a newer
+  upstream version, needs a ``Version-Jump: <reason>`` line in the pushed
+  commit message,
 * the first line of ``<news>`` names that version,
 * every test command in ``.primez-publish.json`` passes on the exact commit.
 
@@ -94,6 +99,35 @@ def compare_versions(left, right):
     left += (0,) * (width - len(left))
     right += (0,) * (width - len(right))
     return (left > right) - (left < right)
+
+
+VERSION_JUMP_TRAILER = re.compile(r"^Version-Jump:\s*\S", re.MULTILINE)
+
+
+def next_versions(previous):
+    """The versions one step above previous: x.y.z -> x+1.0.0, x.y+1.0, x.y.z+1."""
+    parts = parse_version(previous)
+    return [".".join(str(part) for part in parts[:index] + (parts[index] + 1,)
+                     + (0,) * (len(parts) - index - 1))
+            for index in range(len(parts))]
+
+
+def check_version_step(version, previous, commit):
+    """Require a single-step increment unless the commit declares a jump."""
+    if previous is None or compare_versions(version, previous) <= 0:
+        return
+    allowed = next_versions(previous)
+    if parse_version(version) in [parse_version(item) for item in allowed]:
+        return
+    message = git("log", "-1", "--format=%B", commit).stdout.decode("utf-8", "replace")
+    if VERSION_JUMP_TRAILER.search(message):
+        print("publish check: version jump %s -> %s declared by Version-Jump" % (previous, version))
+        return
+    raise CheckError(
+        "version %s is not one step above %s; use one of %s (raise one component by 1 "
+        "and reset the ones after it, see VERSIONING.md in kodi.addons) or add a "
+        "'Version-Jump: <reason>' line to the commit message"
+        % (version, previous, ", ".join(allowed)))
 
 
 def addon_info(raw_xml, where):
@@ -194,15 +228,25 @@ def run_tests(commit, config, local):
                                  % (result.returncode, " ".join(command), tail))
 
 
-def check_commit(commit, config, previous_version, local, already_published=False):
-    """Check one commit; previous_version is the version it replaces (or None)."""
+def check_commit(commit, config, previous_version, local, already_published=False,
+                 minimum_version=None):
+    """Check one commit.
+
+    previous_version is the version on the branch it replaces (or None); the
+    new version must be one step above it. minimum_version (e.g. the
+    published one) must also be exceeded.
+    """
     addon_id, version, news = addon_info(show_file(commit, "addon.xml"), commit[:12])
     if already_published:
         print("publish check: %s %s is already published from this commit" % (addon_id, version))
-    elif previous_version is not None and compare_versions(version, previous_version) <= 0:
-        raise CheckError(
-            "%s version must increase: %s does not exceed %s. Bump the version in "
-            "addon.xml (and add a news entry) in this push" % (addon_id, version, previous_version))
+    else:
+        for floor in (previous_version, minimum_version):
+            if floor is not None and compare_versions(version, floor) <= 0:
+                raise CheckError(
+                    "%s version must increase: %s does not exceed %s. Bump the version in "
+                    "addon.xml (and add a news entry) in this push"
+                    % (addon_id, version, floor))
+        check_version_step(version, previous_version, commit)
     check_news(version, news)
     run_tests(commit, config, local)
     print("publish check: %s %s OK" % (addon_id, version))
@@ -232,14 +276,27 @@ def pre_push(lines):
     return checked
 
 
+def version_at(commit):
+    raw = show_file(commit, "addon.xml") if commit and commit_exists(commit) else None
+    return addon_info(raw, commit[:12])[1] if raw is not None else None
+
+
 def ci():
-    commit = os.environ.get("GITHUB_SHA") or git("rev-parse", "HEAD").stdout.decode().strip()
+    commit = git("rev-parse", os.environ.get("GITHUB_SHA") or "HEAD").stdout.decode().strip()
     config = load_config(commit)
     addon_id, _version, _news = addon_info(show_file(commit, "addon.xml"), commit[:12])
     published_version, published_sha = published_state(
         config, addon_id, os.environ.get("GITHUB_REPOSITORY"))
-    check_commit(commit, config, published_version, local=False,
-                 already_published=published_sha == commit)
+    # The branch tip before this push (PRIMEZ_BEFORE_SHA, from the push event)
+    # or the first parent (a pull request's merge commit has the base first)
+    before = os.environ.get("PRIMEZ_BEFORE_SHA", "")
+    previous = version_at(before) if before and not ZERO_SHA.match(before) else None
+    if previous is None:
+        parent = git("rev-parse", "-q", "--verify", "%s^" % commit, check=False)
+        previous = version_at(parent.stdout.decode().strip()) if parent.returncode == 0 else None
+    check_commit(commit, config, previous, local=False,
+                 already_published=published_sha == commit,
+                 minimum_version=published_version)
 
 
 def manual(commit):
