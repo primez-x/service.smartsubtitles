@@ -17,11 +17,13 @@ update is rejected before it is pushed instead of failing the publish:
 * the first line of ``<news>`` names that version,
 * every test command in ``.primez-publish.json`` passes on the exact commit.
 
-A push that changes only files the add-on zip never contains (tests, CI and
-hooks, docs, READMEs, CLAUDE.md/AGENTS.md, ``.primez-publish.json``; see
-NON_SHIPPED_PATTERNS) is not a release: it needs no version step or news
-entry, so Kodi is not offered an update that changes nothing. Its tests still
-run. The repository publish keeps the published zip for such a commit.
+A push that does not change the deployed add-on is not a release: it needs no
+version step or news entry, so Kodi is not offered an update that changes
+nothing. That is a push changing only files the zip never contains (tests, CI
+and hooks, docs, Markdown, dev tool configs, ``.primez-publish.json``; see
+NON_SHIPPED_PATTERNS), or one whose tip commit has a ``No-Release: <reason>``
+line for shipped changes without effect (comments, formatting). Its tests
+still run. The repository publish keeps the published zip for such a commit.
 
 Usage:
     publish_check.py pre-push <remote> <url>   (git pre-push hook, refs on stdin)
@@ -70,6 +72,9 @@ NON_SHIPPED_PATTERNS = (
     "Readme.*", "test_*.py", "tests", "tests/*", "node_modules", "node_modules/*",
     "pyproject.toml", ".githooks", ".githooks/*", ".primez-publish.json",
     "CLAUDE.md", "AGENTS.md",
+    "*.md", "CONTRIBUTING", "CONTRIBUTING.*", ".pylintrc", "pylintrc", ".flake8",
+    "setup.cfg", "tox.ini", "Makefile", "requirements*.txt", "codecov.yml",
+    ".editorconfig", ".pre-commit-config.yaml",
 )
 
 
@@ -107,9 +112,28 @@ def shipped_changes(base, commit):
     return [name for name in names.splitlines() if name and is_shipped(name)]
 
 
+def declares_no_release(commit):
+    message = git("log", "-1", "--format=%B", commit).stdout.decode("utf-8", "replace")
+    return bool(NO_RELEASE_TRAILER.search(message))
+
+
 def is_release(base, commit):
-    """A push is a release unless base exists and nothing shipped changed since it."""
-    return not (base and commit_exists(base) and not shipped_changes(base, commit))
+    """A push is a release unless base exists and it changes nothing that affects
+    the deployed add-on: only non-shipped files, or shipped changes the tip
+    commit declares inert with a 'No-Release: <reason>' line. Changing the
+    version always makes it a release."""
+    if not (base and commit_exists(base)):
+        return True
+    changed = shipped_changes(base, commit)
+    if not changed:
+        return False
+    if "addon.xml" in changed and version_at(base) != version_at(commit):
+        return True
+    if declares_no_release(commit):
+        print("publish check: No-Release declared; shipped changes without effect: %s"
+              % ", ".join(changed[:8]))
+        return False
+    return True
 
 
 def load_config(commit):
@@ -141,6 +165,9 @@ def compare_versions(left, right):
 
 
 VERSION_JUMP_TRAILER = re.compile(r"^Version-Jump:\s*\S", re.MULTILINE)
+# A shipped change with no effect on the deployed add-on (comments, formatting,
+# dead code): declared on the tip commit, it is not a release either.
+NO_RELEASE_TRAILER = re.compile(r"^No-Release:\s*\S", re.MULTILINE)
 
 
 def next_versions(previous):
