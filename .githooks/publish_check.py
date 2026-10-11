@@ -17,6 +17,12 @@ update is rejected before it is pushed instead of failing the publish:
 * the first line of ``<news>`` names that version,
 * every test command in ``.primez-publish.json`` passes on the exact commit.
 
+A push that changes only files the add-on zip never contains (tests, CI and
+hooks, docs, READMEs, CLAUDE.md/AGENTS.md, ``.primez-publish.json``; see
+NON_SHIPPED_PATTERNS) is not a release: it needs no version step or news
+entry, so Kodi is not offered an update that changes nothing. Its tests still
+run. The repository publish keeps the published zip for such a commit.
+
 Usage:
     publish_check.py pre-push <remote> <url>   (git pre-push hook, refs on stdin)
     publish_check.py ci                        (GitHub Actions: HEAD vs. published)
@@ -44,12 +50,27 @@ import tarfile
 import tempfile
 import urllib.error
 import urllib.request
+import fnmatch
 import xml.etree.ElementTree as ET
 
 CONFIG_FILE = ".primez-publish.json"
 DEFAULT_PUBLISHED_BASE_URL = "https://primez-x.github.io/kodi.addons/"
 TEST_TIMEOUT_SECONDS = int(os.environ.get("PRIMEZ_TEST_TIMEOUT", "900"))
 ZERO_SHA = re.compile(r"^0+$")
+
+# Paths the repository publish never packs into the add-on zip; keep in sync
+# with DEFAULT_EXCLUDES in kodi.addons tools/build_repository.py (a test there
+# checks it). A push touching only these is not a release.
+NON_SHIPPED_PATTERNS = (
+    ".git", ".git/*", ".github", ".github/*", ".claude", ".claude/*", ".DS_Store",
+    ".codacy.yaml", ".gitattributes", ".gitignore", ".idea", ".idea/*",
+    ".mypy_cache", ".mypy_cache/*", ".pytest_cache", ".pytest_cache/*",
+    ".ruff_cache", ".ruff_cache/*", ".vscode", ".vscode/*", "__pycache__",
+    "__pycache__/*", "*.pyc", "*.pyo", "docs", "docs/*", "README", "README.*",
+    "Readme.*", "test_*.py", "tests", "tests/*", "node_modules", "node_modules/*",
+    "pyproject.toml", ".githooks", ".githooks/*", ".primez-publish.json",
+    "CLAUDE.md", "AGENTS.md",
+)
 
 
 class CheckError(Exception):
@@ -71,6 +92,24 @@ def show_file(commit, path):
 
 def commit_exists(commit):
     return git("cat-file", "-e", "%s^{commit}" % commit, check=False).returncode == 0
+
+
+def is_shipped(path):
+    """True if the repository publish would pack this repository path."""
+    if any(part in {".git", ".github", "__pycache__"} for part in path.split("/")):
+        return False
+    return not any(fnmatch.fnmatch(path, pattern) for pattern in NON_SHIPPED_PATTERNS)
+
+
+def shipped_changes(base, commit):
+    """Shipped paths that differ between base and commit (renames count both ways)."""
+    names = git("diff", "--name-only", "--no-renames", base, commit).stdout.decode("utf-8", "replace")
+    return [name for name in names.splitlines() if name and is_shipped(name)]
+
+
+def is_release(base, commit):
+    """A push is a release unless base exists and nothing shipped changed since it."""
+    return not (base and commit_exists(base) and not shipped_changes(base, commit))
 
 
 def load_config(commit):
@@ -229,14 +268,21 @@ def run_tests(commit, config, local):
 
 
 def check_commit(commit, config, previous_version, local, already_published=False,
-                 minimum_version=None):
+                 minimum_version=None, release=True):
     """Check one commit.
 
     previous_version is the version on the branch it replaces (or None); the
     new version must be one step above it. minimum_version (e.g. the
-    published one) must also be exceeded.
+    published one) must also be exceeded. A non-release (release=False: only
+    non-shipped files changed) skips the version and news rules.
     """
     addon_id, version, news = addon_info(show_file(commit, "addon.xml"), commit[:12])
+    if not release:
+        print("publish check: %s %s: only files that are not shipped changed; "
+              "no release, no version step needed" % (addon_id, version))
+        run_tests(commit, config, local)
+        print("publish check: %s %s OK (not a release)" % (addon_id, version))
+        return
     if already_published:
         print("publish check: %s %s is already published from this commit" % (addon_id, version))
     else:
@@ -271,7 +317,8 @@ def pre_push(lines):
                                  % config["branch"])
             previous = addon_info(show_file(remote_sha, "addon.xml"), remote_sha[:12])[1]
         print("publish check: checking %s -> %s" % (local_sha[:12], config["branch"]))
-        check_commit(local_sha, config, previous, local=True)
+        release = previous is None or is_release(remote_sha, local_sha)
+        check_commit(local_sha, config, previous, local=True, release=release)
         checked = True
     return checked
 
@@ -290,13 +337,21 @@ def ci():
     # The branch tip before this push (PRIMEZ_BEFORE_SHA, from the push event)
     # or the first parent (a pull request's merge commit has the base first)
     before = os.environ.get("PRIMEZ_BEFORE_SHA", "")
-    previous = version_at(before) if before and not ZERO_SHA.match(before) else None
+    base = before if before and not ZERO_SHA.match(before) else None
+    previous = version_at(base) if base else None
     if previous is None:
         parent = git("rev-parse", "-q", "--verify", "%s^" % commit, check=False)
-        previous = version_at(parent.stdout.decode().strip()) if parent.returncode == 0 else None
+        base = parent.stdout.decode().strip() if parent.returncode == 0 else None
+        previous = version_at(base) if base else None
+    # Not a release: only non-shipped files changed and the published version
+    # is the one this commit still carries (the publish keeps that zip).
+    release = (previous is None or is_release(base, commit)
+               or compare_versions(_version, previous) != 0
+               or (published_version is not None
+                   and compare_versions(_version, published_version) != 0))
     check_commit(commit, config, previous, local=False,
                  already_published=published_sha == commit,
-                 minimum_version=published_version)
+                 minimum_version=published_version, release=release)
 
 
 def manual(commit):
@@ -304,6 +359,7 @@ def manual(commit):
     config = load_config(commit)
     remote = "origin/%s" % config["branch"]
     previous = None
+    release = True
     if git("rev-parse", "--verify", "-q", remote, check=False).returncode == 0:
         remote_sha = git("rev-parse", remote).stdout.decode().strip()
         if remote_sha == commit:
@@ -311,7 +367,8 @@ def manual(commit):
             remote_sha = git("rev-parse", "%s^" % commit, check=False).stdout.decode().strip()
         if remote_sha and commit_exists(remote_sha):
             previous = addon_info(show_file(remote_sha, "addon.xml"), remote_sha[:12])[1]
-    check_commit(commit, config, previous, local=True)
+            release = is_release(remote_sha, commit)
+    check_commit(commit, config, previous, local=True, release=release)
 
 
 def main(argv):
