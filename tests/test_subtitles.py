@@ -57,6 +57,55 @@ class LanguageNormalizationTests(unittest.TestCase):
         self.assertEqual('', self.subtitles._to_iso639_2(None))
 
 
+class LanguageFallbackTests(unittest.TestCase):
+    """The static table is used when Kodi's converter fails or is unhelpful."""
+
+    def setUp(self):
+        self.subtitles = load_subtitles_module()
+
+    def use_converter(self, convert):
+        self.subtitles.xbmc.convertLanguage = convert
+
+    def test_converter_returning_nothing_uses_table(self):
+        self.use_converter(lambda _language, _format: '')
+        for name, code in (('Norwegian', 'nor'), ('Greek', 'gre'),
+                           ('Portuguese (Brazil)', 'por'), ('pt-BR', 'por'),
+                           ('PT_br', 'por'), ('Chinese (Traditional)', 'chi')):
+            self.assertEqual(code, self.subtitles._to_iso639_2(name), name)
+
+    def test_converter_raising_uses_table(self):
+        def broken(_language, _format):
+            raise TypeError('unsupported')
+        self.use_converter(broken)
+        self.assertEqual('por', self.subtitles._to_iso639_2('Portuguese (Brazil)'))
+        self.use_converter(lambda *_args: (_ for _ in ()).throw(AttributeError()))
+        self.assertEqual('ukr', self.subtitles._to_iso639_2('Ukrainian'))
+
+    def test_bibliographic_and_terminologic_codes_match(self):
+        self.use_converter(lambda _language, _format: '')
+        for pair in (('ger', 'deu'), ('fre', 'fra'), ('dut', 'nld'),
+                     ('chi', 'zho'), ('cze', 'ces'), ('gre', 'ell'),
+                     ('German', 'deu'), ('French', 'fre')):
+            self.assertEqual(self.subtitles._to_iso639_2(pair[0]),
+                             self.subtitles._to_iso639_2(pair[1]), pair)
+
+    def test_converter_terminologic_result_is_canonicalized(self):
+        self.use_converter(lambda language, _format: {
+            'german': 'deu', 'ger': 'ger', 'fra': 'fra'}.get(language, ''))
+        self.assertEqual('ger', self.subtitles._to_iso639_2('German'))
+        self.assertEqual('ger', self.subtitles._to_iso639_2('ger'))
+        self.assertEqual('fre', self.subtitles._to_iso639_2('fra'))
+
+    def test_converter_gets_whole_value_when_base_fails(self):
+        self.use_converter(lambda language, _format: {
+            'serbo-croatian': 'hbs'}.get(language, ''))
+        self.assertEqual('hbs', self.subtitles._to_iso639_2('Serbo-Croatian'))
+
+    def test_unknown_language_is_kept_lowercase(self):
+        self.use_converter(lambda _language, _format: '')
+        self.assertEqual('klingon', self.subtitles._to_iso639_2('Klingon'))
+
+
 class SelectionTests(unittest.TestCase):
     def setUp(self):
         self.subtitles = load_subtitles_module()

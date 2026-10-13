@@ -26,7 +26,9 @@ import xbmcgui
 # but Kodi's ``locale.subtitlelanguage`` and ``subtitles.languages`` settings
 # hold English display names ("English", "Portuguese (Brazil)").
 # xbmc.convertLanguage handles most of this, but is inconsistent with full
-# display names on some Kodi builds, so we seed common mappings here.
+# display names on some Kodi builds, so we seed common mappings here. Codes are
+# canonicalized to the ISO 639-2/B form (ger, not deu) whichever way they were
+# obtained, so both sides of a comparison agree.
 _LANG_TO_ISO639_2 = {
     'english': 'eng', 'en': 'eng', 'eng': 'eng',
     'japanese': 'jpn', 'ja': 'jpn', 'jpn': 'jpn',
@@ -52,6 +54,38 @@ _LANG_TO_ISO639_2 = {
     'hebrew': 'heb', 'he': 'heb', 'heb': 'heb',
     'indonesian': 'ind', 'id': 'ind', 'ind': 'ind',
     'vietnamese': 'vie', 'vi': 'vie', 'vie': 'vie',
+    'greek': 'gre', 'el': 'gre', 'ell': 'gre', 'gre': 'gre',
+    'hungarian': 'hun', 'hu': 'hun', 'hun': 'hun',
+    'romanian': 'rum', 'ro': 'rum', 'ron': 'rum', 'rum': 'rum',
+    'ukrainian': 'ukr', 'uk': 'ukr', 'ukr': 'ukr',
+    'bulgarian': 'bul', 'bg': 'bul', 'bul': 'bul',
+    'croatian': 'hrv', 'hr': 'hrv', 'hrv': 'hrv',
+    'serbian': 'srp', 'sr': 'srp', 'srp': 'srp',
+    'slovak': 'slo', 'sk': 'slo', 'slk': 'slo', 'slo': 'slo',
+    'slovenian': 'slv', 'sl': 'slv', 'slv': 'slv',
+    'catalan': 'cat', 'ca': 'cat', 'cat': 'cat',
+    'persian': 'per', 'farsi': 'per', 'fa': 'per', 'fas': 'per', 'per': 'per',
+    'malay': 'may', 'ms': 'may', 'msa': 'may', 'may': 'may',
+    'icelandic': 'ice', 'is': 'ice', 'isl': 'ice', 'ice': 'ice',
+    'filipino': 'fil', 'tagalog': 'fil', 'tl': 'fil', 'fil': 'fil', 'tgl': 'fil',
+    'lithuanian': 'lit', 'lt': 'lit', 'lit': 'lit',
+    'latvian': 'lav', 'lv': 'lav', 'lav': 'lav',
+    'estonian': 'est', 'et': 'est', 'est': 'est',
+    'bengali': 'ben', 'bn': 'ben', 'ben': 'ben',
+    'tamil': 'tam', 'ta': 'tam', 'tam': 'tam',
+    'telugu': 'tel', 'te': 'tel', 'tel': 'tel',
+    'urdu': 'urd', 'ur': 'urd', 'urd': 'urd',
+    'norwegian bokmal': 'nor', 'norwegian bokm\u00e5l': 'nor',
+    'nb': 'nor', 'nn': 'nor', 'nno': 'nor',
+}
+
+# Remaining ISO 639-2/T codes that differ from their /B form, as returned by
+# some Kodi builds for one side of a comparison (deu vs ger).
+_ISO639_2_T_TO_B = {
+    'deu': 'ger', 'fra': 'fre', 'nld': 'dut', 'zho': 'chi', 'ces': 'cze',
+    'ell': 'gre', 'ron': 'rum', 'slk': 'slo', 'fas': 'per', 'msa': 'may',
+    'isl': 'ice', 'eus': 'baq', 'hye': 'arm', 'kat': 'geo', 'mkd': 'mac',
+    'mri': 'mao', 'mya': 'bur', 'sqi': 'alb', 'bod': 'tib', 'cym': 'wel',
 }
 
 # Special (non-language) values of Kodi's ``locale.subtitlelanguage``.
@@ -243,15 +277,19 @@ def _to_iso639_2(language):
     if not value:
         return ''
     base = value.split('-', 1)[0]
-    # Try Kodi's converter first (authoritative when available)
-    try:
-        converted = xbmc.convertLanguage(base, xbmc.ISO_639_2)
+    # Try Kodi's converter first (authoritative when available): the bare
+    # language of "pt-BR", then the whole value for names containing a hyphen
+    for candidate in dict.fromkeys((base, value)):
+        try:
+            converted = xbmc.convertLanguage(candidate, xbmc.ISO_639_2)
+        except (AttributeError, TypeError):
+            break
         if converted:
-            return converted.lower()
-    except (AttributeError, TypeError):
-        pass
+            code = converted.lower()
+            return _ISO639_2_T_TO_B.get(code, code)
     # Fallback to our static map
-    return _LANG_TO_ISO639_2.get(value, _LANG_TO_ISO639_2.get(base, base))
+    code = _LANG_TO_ISO639_2.get(value, _LANG_TO_ISO639_2.get(base, base))
+    return _ISO639_2_T_TO_B.get(code, code)
 
 
 def _get_global_setting(setting):
