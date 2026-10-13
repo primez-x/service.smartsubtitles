@@ -178,14 +178,16 @@ def next_versions(previous):
             for index in range(len(parts))]
 
 
-def check_version_step(version, previous, commit):
+def check_version_step(version, previous, commit, commit_message=None):
     """Require a single-step increment unless the commit declares a jump."""
     if previous is None or compare_versions(version, previous) <= 0:
         return
     allowed = next_versions(previous)
     if parse_version(version) in [parse_version(item) for item in allowed]:
         return
-    message = git("log", "-1", "--format=%B", commit).stdout.decode("utf-8", "replace")
+    message = commit_message
+    if message is None:
+        message = git("log", "-1", "--format=%B", commit).stdout.decode("utf-8", "replace")
     if VERSION_JUMP_TRAILER.search(message):
         print("publish check: version jump %s -> %s declared by Version-Jump" % (previous, version))
         return

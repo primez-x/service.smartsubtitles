@@ -11,7 +11,7 @@ import xbmcgui
 
 from subtitles import select_signs_songs_track
 
-RETRY_WINDOW = 2.0    # seconds to keep retrying while streams enumerate
+RETRY_WINDOW = 10.0   # seconds to wait for streams and player readiness
 RETRY_INTERVAL = 0.25  # seconds between attempts
 # Home-window property "<result>|<playing file>" read by PlexKodiConnect: it
 # applies the Plex subtitle choice itself unless the result is final here.
@@ -59,21 +59,24 @@ class SmartSubtitlesPlayer(xbmc.Player):
         player has moved on to a different file than the one we started for."""
         if cancel.is_set() or monitor.abortRequested():
             return True
-        if playing_file is not None and self._current_file() != playing_file:
-            return True
-        return False
+        return playing_file is None or self._current_file() != playing_file
 
     def _select_with_retry(self, cancel, playing_file):
-        """Attempt selection immediately, retry every 250ms up to 2s total."""
+        """Retry delayed or failed selection until the ten-second deadline."""
         monitor = xbmc.Monitor()
         deadline = time.monotonic() + RETRY_WINDOW
         attempts = 0
         skips = 0
-        _publish_result('pending', playing_file)
+        selection_state = {}
 
         def should_stop():
             return self._should_stop(cancel, monitor, playing_file)
 
+        if should_stop():
+            return
+        _publish_result('pending', playing_file)
+
+        last_error = False
         while time.monotonic() < deadline:
             if should_stop():
                 xbmc.log('Smart Subtitles: selection cancelled after %d attempt(s)'
@@ -81,11 +84,17 @@ class SmartSubtitlesPlayer(xbmc.Player):
                 return
             attempts += 1
             try:
-                result = select_signs_songs_track(should_stop)
+                result = select_signs_songs_track(should_stop, selection_state)
             except Exception:  # pylint: disable=broad-except
                 xbmc.log('Smart Subtitles: selection failed:\n%s' % traceback.format_exc(),
                          xbmc.LOGERROR)
-                _publish_result('error', playing_file)
+                result = 'retry'
+                last_error = True
+            else:
+                last_error = False
+            if should_stop():
+                xbmc.log('Smart Subtitles: selection cancelled after %d attempt(s)'
+                         % attempts, xbmc.LOGINFO)
                 return
             if result == 'cancelled':
                 xbmc.log('Smart Subtitles: selection cancelled after %d attempt(s)'
@@ -95,18 +104,29 @@ class SmartSubtitlesPlayer(xbmc.Player):
             # file's subtitle, which on the next episode of the same release
             # resolves to a valid stream: only a repeated 'skip' is final.
             skips = skips + 1 if result == 'skip' else 0
+            if result == 'no_player':
+                result = 'retry'
             if result not in ('retry', 'skip') or skips >= 2:
                 xbmc.log('Smart Subtitles: selection finished after %d attempt(s) (%s)' % (
                     attempts, result), xbmc.LOGINFO)
+                if should_stop():
+                    return
                 _publish_result(result, playing_file)
                 return
-            if cancel.wait(RETRY_INTERVAL):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            if cancel.wait(min(RETRY_INTERVAL, remaining)):
                 xbmc.log('Smart Subtitles: selection cancelled after %d attempt(s)'
                          % attempts, xbmc.LOGINFO)
                 return
-        result = 'skip' if skips else 'no_streams'
+        if should_stop():
+            return
+        result = 'error' if last_error else ('skip' if skips else 'no_streams')
         xbmc.log('Smart Subtitles: no final result after %d attempts (%s)'
                  % (attempts, result), xbmc.LOGINFO)
+        if should_stop():
+            return
         _publish_result(result, playing_file)
 
     def onPlayBackStopped(self):  # pylint: disable=invalid-name

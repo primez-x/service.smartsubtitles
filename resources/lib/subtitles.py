@@ -108,6 +108,14 @@ def _notify_selected(name):
     xbmcgui.Dialog().notification(header, name, xbmcgui.NOTIFICATION_INFO, 3000)
 
 
+def _notify_confirmed_selection(name):
+    try:
+        _notify_selected(name)
+    except Exception as error:  # pylint: disable=broad-except
+        xbmc.log('Smart Subtitles: notification failed: %s' % error,
+                 xbmc.LOGWARNING)
+
+
 def warn_plexkodiconnect_interop():
     """Log a one-time warning when PlexKodiConnect is enabled with its
     subtitle stream pick set to Plex ('0'): PKC will then overwrite the
@@ -179,16 +187,32 @@ def _get_subtitle_streams(playerid):
     )
 
 
-def _set_subtitle(playerid, index):
-    _jsonrpc('Player.SetSubtitle', {'playerid': playerid, 'subtitle': index})
-    _jsonrpc('Player.SetSubtitle', {'playerid': playerid, 'subtitle': 'on'})
+def _jsonrpc_succeeded(response):
+    return (isinstance(response, dict) and 'error' not in response
+            and response.get('result') == 'OK')
 
 
-def _disable_subtitles(playerid):
-    _jsonrpc('Player.SetSubtitle', {'playerid': playerid, 'subtitle': 'off'})
+def _set_subtitle(playerid, index, should_stop=None):
+    if should_stop is not None and should_stop():
+        return False
+    selected = _jsonrpc('Player.SetSubtitle', {
+        'playerid': playerid, 'subtitle': index})
+    if not _jsonrpc_succeeded(selected):
+        return False
+    if should_stop is not None and should_stop():
+        return False
+    enabled = _jsonrpc('Player.SetSubtitle', {
+        'playerid': playerid, 'subtitle': 'on'})
+    return _jsonrpc_succeeded(enabled)
 
 
-DEFAULT_KEYWORDS = 'signs,songs,forced'
+def _disable_subtitles(playerid, should_stop=None):
+    if should_stop is not None and should_stop():
+        return False
+    response = _jsonrpc('Player.SetSubtitle', {
+        'playerid': playerid, 'subtitle': 'off'})
+    return _jsonrpc_succeeded(response)
+
 
 # Keywords in the "signs/songs" family. A name matching one of these ranks
 # above a name matching any other keyword (e.g. "forced").
@@ -208,7 +232,7 @@ RANK_KEYWORD = 2       # name matches any other keyword
 
 
 def _get_keywords():
-    raw = _get_setting('keywords') or DEFAULT_KEYWORDS
+    raw = _get_setting('keywords') or ''
     return [k.strip().lower() for k in raw.split(',') if k.strip()]
 
 
@@ -376,24 +400,83 @@ def _stream_for_index(streams, index):
     return None
 
 
-def select_signs_songs_track(should_stop=None):
+def _stream_signature(stream):
+    return (
+        _to_iso639_2(stream.get('language', '')),
+        (stream.get('name') or '').strip().lower(),
+        bool(stream.get('isforced', False)),
+        bool(stream.get('isdefault', False)),
+        bool(stream.get('isimpaired', False)),
+    )
+
+
+def _observe_subtitle_state(attempt_state, playerid, sub_enabled):
+    previous = attempt_state.get('last_subtitle_state')
+    current = (playerid, bool(sub_enabled))
+    attempt_state['last_subtitle_state'] = current
+    return (previous is not None and previous[0] == playerid
+            and previous[1] and not current[1])
+
+
+def _current_subtitle_policy(streams, current, sub_enabled,
+                             lang_filter, authoritative):
+    current_stream = _stream_for_index(streams, current.get('index'))
+    if current_stream is None or not sub_enabled:
+        return 'continue', lang_filter, False
+    current_lang = _to_iso639_2(current_stream.get('language', ''))
+    if not lang_filter or current_lang in lang_filter:
+        xbmc.log('Smart Subtitles: subtitle already active in preferred '
+                 'language (index=%s, lang=%s), not overriding'
+                 % (current.get('index'), current_lang), xbmc.LOGINFO)
+        return 'skip', lang_filter, False
+    if not current_stream.get('isforced'):
+        xbmc.log('Smart Subtitles: non-preferred non-forced subtitle '
+                 'active (index=%s, lang=%s), respecting as user choice'
+                 % (current.get('index'), current_lang), xbmc.LOGINFO)
+        return 'skip', lang_filter, False
+    if not authoritative:
+        xbmc.log('Smart Subtitles: forced subtitle (index=%s, lang=%s) '
+                 'picked by Kodi; preferred languages are not authoritative, '
+                 'not overriding' % (current.get('index'), current_lang),
+                 xbmc.LOGINFO)
+        return 'skip', lang_filter, False
+    return 'continue', authoritative, True
+
+
+def _best_candidate(streams, keywords, lang_filter):
+    best = None
+    for position, stream in enumerate(streams):
+        stream_lang = _to_iso639_2(stream.get('language', ''))
+        rank = _candidate_rank(stream, keywords)
+        if lang_filter and stream_lang not in lang_filter:
+            continue
+        if rank is None:
+            continue
+        if best is None or (rank, position) < best[:2]:
+            best = (rank, position, stream, stream_lang)
+    return best
+
+
+def select_signs_songs_track(should_stop=None, attempt_state=None):
     """Main entry point. Called on playback start.
 
-    should_stop, when given, is checked right before subtitles are changed so
-    an attempt for a file that is no longer playing never touches the next one.
+    should_stop, when given, guards every subtitle write and confirmation.
+    attempt_state carries an unconfirmed selection between retry calls.
 
     Returns:
       'selected'  — found and selected a matching track
       'no_match'  — scanned streams, none matched in preferred language
       'disabled'  — addon disabled in settings
       'no_player' — no active video player
-      'skip'      — user/Kodi already has a preferred-language subtitle active
-      'retry'     — no streams available yet (caller should retry)
-      'cancelled' — should_stop() turned true before anything was changed
+      'skip'      — user/Kodi already made a subtitle choice
+      'retry'     — stream data or subtitle change needs another attempt
+      'cancelled' — should_stop() turned true during an attempt
     """
     if not _get_setting_bool('enabled'):
         xbmc.log('Smart Subtitles: disabled, skipping', xbmc.LOGINFO)
         return 'disabled'
+    if attempt_state is None:
+        attempt_state = {}
 
     playerid = _get_active_player_id()
     if playerid is None:
@@ -401,6 +484,45 @@ def select_signs_songs_track(should_stop=None):
         return 'no_player'
 
     streams, current, sub_enabled = _get_subtitle_streams(playerid)
+    if should_stop is not None and should_stop():
+        return 'cancelled'
+    if _get_active_player_id() != playerid:
+        return 'retry'
+
+    pending = attempt_state.get('pending_selection')
+    if pending is not None:
+        if pending['playerid'] != playerid:
+            attempt_state.pop('pending_selection', None)
+        elif not streams:
+            if pending['previous_enabled'] and not sub_enabled:
+                attempt_state.pop('pending_selection', None)
+                return 'skip'
+            return 'retry'
+        else:
+            current_stream = _stream_for_index(streams, current.get('index'))
+            current_signature = (_stream_signature(current_stream)
+                                 if current_stream is not None else None)
+            if (sub_enabled and current_signature == pending['signature']):
+                matching = [stream for stream in streams
+                            if _stream_signature(stream) == pending['signature']]
+                if len(matching) == 1:
+                    if should_stop is not None and should_stop():
+                        return 'cancelled'
+                    attempt_state.pop('pending_selection', None)
+                    _notify_confirmed_selection(
+                        pending['name'] or pending['stream_lang']
+                        or str(pending['index']))
+                    return 'selected'
+            unchanged = (
+                current_signature == pending['previous_signature']
+                and sub_enabled == pending['previous_enabled'])
+            if unchanged:
+                return 'retry'
+            attempt_state.pop('pending_selection', None)
+            return 'skip'
+
+    if _observe_subtitle_state(attempt_state, playerid, sub_enabled):
+        return 'skip'
     if not streams:
         return 'retry'
 
@@ -414,88 +536,114 @@ def select_signs_songs_track(should_stop=None):
                  'language from Kodi settings — language filter inactive',
                  xbmc.LOGWARNING)
     lang_filter = preferred if respect_lang else set()
-
     keywords = _get_keywords()
-
-    # --- Stale-index guard + non-preferred override ---
-    # Validate the reported current index against the actual stream list.
-    # Kodi's ``currentsubtitle.index`` can carry a stale value from the
-    # previous file for tens of ms after onAVStarted. If the index doesn't
-    # resolve to a real stream in THIS file's list, treat it as unresolved.
-    current_index = current.get('index')
-    current_stream = _stream_for_index(streams, current_index)
-    replacing = False
-
-    if sub_enabled and current_stream is not None:
-        current_lang = _to_iso639_2(current_stream.get('language', ''))
-        in_preferred = not lang_filter or current_lang in lang_filter
-        if in_preferred:
-            xbmc.log('Smart Subtitles: subtitle already active in preferred '
-                     'language (index=%s, lang=%s), not overriding'
-                     % (current_index, current_lang), xbmc.LOGINFO)
-            return 'skip'
-        # Current track is active but NOT in a preferred language.
-        # If it's NOT forced-flagged, it may be a deliberate user choice on
-        # this file — respect it.
-        if not current_stream.get('isforced'):
-            xbmc.log('Smart Subtitles: non-preferred non-forced subtitle '
-                     'active (index=%s, lang=%s), respecting as user choice'
-                     % (current_index, current_lang), xbmc.LOGINFO)
-            return 'skip'
-        # It's forced-flagged: Kodi's forced_only auto-picked it (first
-        # forced by stream index, regardless of language — e.g. Portuguese
-        # (Forced) at idx 0 on a multi-language anime mux). Replace it, but
-        # only with a track in a language that did not come solely from
-        # Kodi's pre-filled download-language list.
-        if not authoritative:
-            xbmc.log('Smart Subtitles: forced subtitle (index=%s, lang=%s) '
-                     'picked by Kodi; preferred languages %s come only from '
-                     'the subtitle download languages, not overriding'
-                     % (current_index, current_lang, sorted(preferred)),
-                     xbmc.LOGINFO)
-            return 'skip'
-        lang_filter = authoritative
-        replacing = True
-
-    # --- Scan for the best candidate in a preferred language ---
+    decision, lang_filter, _replacing = _current_subtitle_policy(
+        streams, current, sub_enabled, lang_filter, authoritative)
+    if decision == 'skip':
+        return 'skip'
     xbmc.log('Smart Subtitles: scanning %d streams (preferred=%s, keywords=%s)'
              % (len(streams), sorted(lang_filter) if lang_filter else 'any',
                 keywords), xbmc.LOGINFO)
-    best = None
-    for position, stream in enumerate(streams):
-        name = stream.get('name', '')
-        index = stream.get('index')
+    for stream in streams:
         stream_lang = _to_iso639_2(stream.get('language', ''))
         rank = _candidate_rank(stream, keywords)
         xbmc.log('Smart Subtitles: stream[%s] lang=%s name=%r forced=%s rank=%s'
-                 % (index, stream_lang or stream.get('language'), name,
-                    bool(stream.get('isforced')), rank),
+                 % (stream.get('index'), stream_lang or stream.get('language'),
+                    stream.get('name', ''), bool(stream.get('isforced')), rank),
                  xbmc.LOGDEBUG)
-        if lang_filter and stream_lang not in lang_filter:
-            continue
-        if rank is None:
-            continue
-        if best is None or (rank, position) < best[:2]:
-            best = (rank, position, stream, stream_lang)
-
+    best = _best_candidate(streams, keywords, lang_filter)
     if best is None:
-        # Never leave the user with less than Kodi selected.
         xbmc.log('Smart Subtitles: no matching track in preferred languages '
                  'found (keywords=%s), leaving subtitles as they are'
                  % keywords, xbmc.LOGINFO)
         return 'no_match'
 
-    _rank, _position, stream, stream_lang = best
+    if should_stop is not None and should_stop():
+        return 'cancelled'
+    if _get_active_player_id() != playerid:
+        return 'retry'
+
+    fresh_streams, fresh_current, fresh_enabled = _get_subtitle_streams(playerid)
+    if not fresh_streams:
+        return 'retry'
+    if sub_enabled and not fresh_enabled:
+        return 'skip'
+    fresh_filter = preferred if respect_lang else set()
+    decision, fresh_filter, replacing = _current_subtitle_policy(
+        fresh_streams, fresh_current, fresh_enabled, fresh_filter,
+        authoritative)
+    if decision == 'skip':
+        return 'skip'
+
+    fresh_best = _best_candidate(fresh_streams, keywords, fresh_filter)
+    if fresh_best is None:
+        return 'retry'
+    _rank, _position, stream, stream_lang = fresh_best
+    signature = _stream_signature(stream)
+    matching = [candidate for candidate in fresh_streams
+                if _stream_signature(candidate) == signature]
+    if len(matching) != 1:
+        return 'retry'
     index = stream.get('index')
+    if index is None:
+        return 'retry'
     name = stream.get('name', '')
     if should_stop is not None and should_stop():
         return 'cancelled'
+    if _get_active_player_id() != playerid:
+        return 'retry'
+    previous_stream = _stream_for_index(
+        fresh_streams, fresh_current.get('index'))
+    previous_signature = (_stream_signature(previous_stream)
+                          if previous_stream is not None else None)
     if replacing:
         xbmc.log('Smart Subtitles: replacing non-preferred forced subtitle '
-                 '(index=%s) auto-picked by Kodi' % current_index, xbmc.LOGINFO)
-        _disable_subtitles(playerid)
+                 '(index=%s) auto-picked by Kodi'
+                 % fresh_current.get('index'), xbmc.LOGINFO)
+        disabled = _disable_subtitles(playerid, should_stop)
+        if not disabled:
+            if should_stop is not None and should_stop():
+                return 'cancelled'
+            return 'retry'
+    if should_stop is not None and should_stop():
+        return 'cancelled'
+    if _get_active_player_id() != playerid:
+        return 'retry'
     xbmc.log('Smart Subtitles: SELECTING index=%s lang=%s name=%s'
              % (index, stream_lang, name), xbmc.LOGINFO)
-    _set_subtitle(playerid, index)
-    _notify_selected(name or stream_lang or str(index))
+    applied = _set_subtitle(playerid, index, should_stop)
+    if not applied:
+        if should_stop is not None and should_stop():
+            return 'cancelled'
+        return 'retry'
+    if should_stop is not None and should_stop():
+        return 'cancelled'
+    if _get_active_player_id() != playerid:
+        return 'retry'
+    attempt_state['pending_selection'] = {
+        'playerid': playerid,
+        'signature': signature,
+        'name': name,
+        'stream_lang': stream_lang,
+        'index': index,
+        'previous_signature': previous_signature,
+        'previous_enabled': fresh_enabled,
+    }
+
+    confirmed_streams, confirmed_current, confirmed_enabled = \
+        _get_subtitle_streams(playerid)
+    if should_stop is not None and should_stop():
+        return 'cancelled'
+    if _get_active_player_id() != playerid:
+        return 'retry'
+    confirmed_stream = _stream_for_index(
+        confirmed_streams, confirmed_current.get('index'))
+    confirmed_matches = [candidate for candidate in confirmed_streams
+                         if _stream_signature(candidate) == signature]
+    if (not confirmed_enabled or confirmed_stream is None
+            or _stream_signature(confirmed_stream) != signature
+            or len(confirmed_matches) != 1):
+        return 'retry'
+    attempt_state.pop('pending_selection', None)
+    _notify_confirmed_selection(name or stream_lang or str(index))
     return 'selected'

@@ -2,6 +2,7 @@ import importlib.util
 from pathlib import Path
 import sys
 import threading
+import time
 import types
 import unittest
 from unittest import mock
@@ -38,6 +39,26 @@ class FakeWindow(object):
 HOME = FakeWindow()
 
 
+class FakeClock(object):
+    def __init__(self):
+        self.elapsed = 0.0
+
+    def monotonic(self):
+        return self.elapsed
+
+
+class AdvancingEvent(object):
+    def __init__(self, clock):
+        self.clock = clock
+
+    def is_set(self):
+        return False
+
+    def wait(self, seconds):
+        self.clock.elapsed += seconds
+        return False
+
+
 def load_player_module(select):
     xbmc = types.SimpleNamespace(
         LOGINFO=1,
@@ -66,7 +87,7 @@ class RetryTests(unittest.TestCase):
     def _player(self, results=None, interval=0.01):
         results = list(results or ['retry'])
 
-        def select(should_stop=None):
+        def select(should_stop=None, _attempt_state=None):
             self.calls.append(should_stop)
             result = results.pop(0) if len(results) > 1 else results[0]
             if isinstance(result, Exception):
@@ -75,7 +96,16 @@ class RetryTests(unittest.TestCase):
 
         module = load_player_module(select)
         module.RETRY_INTERVAL = interval
+        self.module = module
         return module.SmartSubtitlesPlayer()
+
+    def _clock_player(self, select, interval=1.0):
+        clock = FakeClock()
+        module = load_player_module(select)
+        module.RETRY_INTERVAL = interval
+        module.time = types.SimpleNamespace(monotonic=clock.monotonic)
+        self.module = module
+        return module.SmartSubtitlesPlayer(), clock, AdvancingEvent(clock)
 
     def test_stops_retrying_once_selection_finishes(self):
         player = self._player(['retry', 'selected'])
@@ -114,11 +144,133 @@ class RetryTests(unittest.TestCase):
         player._select_with_retry(threading.Event(), 'episode1.mkv')
         self.assertEqual('pending|episode1.mkv', HOME.properties['SmartSubtitles.Result'])
 
-    def test_selection_error_ends_the_attempt(self):
+    def test_retries_after_transient_selection_error(self):
         player = self._player([ValueError('bad reply'), 'selected'])
         player._select_with_retry(threading.Event(), 'episode1.mkv')
-        self.assertEqual(1, len(self.calls))
+        self.assertEqual(2, len(self.calls))
+        self.assertEqual('selected|episode1.mkv', HOME.properties['SmartSubtitles.Result'])
+
+    def test_retries_when_video_player_is_not_ready(self):
+        player = self._player(['no_player', 'selected'])
+        player._select_with_retry(threading.Event(), 'episode1.mkv')
+        self.assertEqual(2, len(self.calls))
+        self.assertEqual('selected|episode1.mkv', HOME.properties['SmartSubtitles.Result'])
+
+    def test_retries_for_streams_arriving_after_two_seconds(self):
+        player_state = {}
+
+        def select(_should_stop=None, _attempt_state=None):
+            clock = player_state['clock']
+            self.calls.append(clock.elapsed)
+            return 'selected' if clock.elapsed >= 2.5 else 'retry'
+
+        player, clock, cancel = self._clock_player(select)
+        player_state['clock'] = clock
+        player._select_with_retry(cancel, 'episode1.mkv')
+
+        self.assertEqual('selected|episode1.mkv', HOME.properties['SmartSubtitles.Result'])
+        self.assertGreaterEqual(self.calls[-1], 2.5)
+        self.assertLess(clock.elapsed, self.module.RETRY_WINDOW)
+
+    def test_reuses_selection_state_across_retries(self):
+        states = []
+
+        def select(_should_stop=None, attempt_state=None):
+            states.append(attempt_state)
+            if len(states) == 1:
+                attempt_state['pending'] = True
+                return 'retry'
+            return 'selected'
+
+        module = load_player_module(select)
+        module.RETRY_INTERVAL = 0.001
+        player = module.SmartSubtitlesPlayer()
+        player._select_with_retry(threading.Event(), 'episode1.mkv')
+
+        self.assertEqual(2, len(states))
+        self.assertIs(states[0], states[1])
+        self.assertEqual('selected|episode1.mkv', HOME.properties['SmartSubtitles.Result'])
+
+    def test_manual_skip_after_two_seconds_stops_retries(self):
+        player_state = {}
+
+        def select(_should_stop=None, _attempt_state=None):
+            clock = player_state['clock']
+            self.calls.append(clock.elapsed)
+            return 'skip' if clock.elapsed >= 2.5 else 'retry'
+
+        player, clock, cancel = self._clock_player(select)
+        player_state['clock'] = clock
+        player._select_with_retry(cancel, 'episode1.mkv')
+
+        self.assertEqual('skip|episode1.mkv', HOME.properties['SmartSubtitles.Result'])
+        self.assertEqual(5, len(self.calls))
+        self.assertEqual([3.0, 4.0], self.calls[-2:])
+
+    def test_playback_change_after_two_seconds_cancels_retries(self):
+        state = {}
+
+        def select(_should_stop=None, _attempt_state=None):
+            clock = state['clock']
+            player = state['player']
+            self.calls.append(clock.elapsed)
+            if clock.elapsed >= 2.5:
+                player.playing_file = 'episode2.mkv'
+                return 'selected'
+            return 'retry'
+
+        player, clock, cancel = self._clock_player(select)
+        state['clock'] = clock
+        state['player'] = player
+        player._select_with_retry(cancel, 'episode1.mkv')
+
+        self.assertGreaterEqual(self.calls[-1], 2.5)
+        self.assertEqual('pending|episode1.mkv', HOME.properties['SmartSubtitles.Result'])
+
+    def test_retry_deadline_expires_after_ten_seconds(self):
+        player, clock, cancel = self._clock_player(
+            lambda _should_stop=None, _attempt_state=None:
+                self.calls.append('retry') or 'retry')
+        player._select_with_retry(cancel, 'episode1.mkv')
+
+        self.assertEqual(10.0, self.module.RETRY_WINDOW)
+        self.assertEqual(10.0, clock.elapsed)
+        self.assertEqual(10, len(self.calls))
+        self.assertEqual('no_streams|episode1.mkv', HOME.properties['SmartSubtitles.Result'])
+
+    def test_retry_wait_does_not_extend_deadline(self):
+        player, clock, cancel = self._clock_player(
+            lambda _should_stop=None, _attempt_state=None:
+                self.calls.append('retry') or 'retry',
+            interval=6.0)
+        player._select_with_retry(cancel, 'episode1.mkv')
+
+        self.assertEqual(10.0, clock.elapsed)
+        self.assertEqual(2, len(self.calls))
+        self.assertEqual('no_streams|episode1.mkv', HOME.properties['SmartSubtitles.Result'])
+
+    def test_repeated_errors_stop_within_the_retry_window(self):
+        player = self._player([ValueError('bad reply')], interval=0.005)
+        self.module.RETRY_WINDOW = 0.03
+        started = time.monotonic()
+        player._select_with_retry(threading.Event(), 'episode1.mkv')
+        elapsed = time.monotonic() - started
+        self.assertGreater(len(self.calls), 1)
+        self.assertLess(elapsed, 0.1)
         self.assertEqual('error|episode1.mkv', HOME.properties['SmartSubtitles.Result'])
+
+    def test_playback_change_during_selection_does_not_publish_stale_result(self):
+        holder = {}
+
+        def select(should_stop=None, _attempt_state=None):
+            holder['player'].playing_file = 'episode2.mkv'
+            return 'no_match'
+
+        player_module = load_player_module(select)
+        guarded_player = player_module.SmartSubtitlesPlayer()
+        holder['player'] = guarded_player
+        guarded_player._select_with_retry(threading.Event(), 'episode1.mkv')
+        self.assertEqual('pending|episode1.mkv', HOME.properties['SmartSubtitles.Result'])
 
     def test_cancelled_attempt_does_not_select(self):
         player = self._player()

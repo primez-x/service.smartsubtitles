@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="service.smartsubtitles" name="Smart Subtitles" version="0.6.1" provider-name="primez-x">
+<addon id="service.smartsubtitles" name="Smart Subtitles" version="0.7.0" provider-name="primez-x">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
     </requires>
@@ -10,7 +10,12 @@
         <platform>all</platform>
         <license>GPL-2.0-only</license>
         <source>https://github.com/primez-x/service.smartsubtitles</source>
-        <news>v0.6.1
+        <news>v0.7.0
+- Confirm subtitle changes before announcements and PKC results.
+- Retry delayed streams for ten seconds and preserve manual subtitle choices.
+- Empty keywords disable name matching; forced tracks remain eligible.
+
+v0.6.1
 - Fix subtitle tracks not being recognised as the preferred language when Kodi names it differently from the track (for example "Portuguese (Brazil)", "Norwegian", or German coded deu versus ger); more languages are now understood.
 
 v0.6.0

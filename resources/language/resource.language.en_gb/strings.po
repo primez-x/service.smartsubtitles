@@ -26,3 +26,7 @@ msgstr ""
 msgctxt "#32006"
 msgid "Show notification when a track is selected"
 msgstr ""
+
+msgctxt "#32007"
+msgid "Leave empty to disable subtitle-name matching. Tracks marked as forced by Kodi remain eligible."
+msgstr ""
