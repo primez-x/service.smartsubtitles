@@ -76,7 +76,7 @@ _LANG_TO_ISO639_2 = {
     'telugu': 'tel', 'te': 'tel', 'tel': 'tel',
     'urdu': 'urd', 'ur': 'urd', 'urd': 'urd',
     'norwegian bokmal': 'nor', 'norwegian bokm\u00e5l': 'nor',
-    'nb': 'nor', 'nn': 'nor', 'nno': 'nor',
+    'nb': 'nor', 'nn': 'nno', 'nno': 'nno', 'norwegian nynorsk': 'nno',
 }
 
 # Remaining ISO 639-2/T codes that differ from their /B form, as returned by

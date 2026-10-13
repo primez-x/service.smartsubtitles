@@ -89,6 +89,13 @@ class LanguageFallbackTests(unittest.TestCase):
             self.assertEqual(self.subtitles._to_iso639_2(pair[0]),
                              self.subtitles._to_iso639_2(pair[1]), pair)
 
+    def test_nynorsk_stays_distinct_from_bokmal(self):
+        self.use_converter(lambda _language, _format: '')
+        for name in ('nn', 'nno', 'Norwegian Nynorsk'):
+            self.assertEqual('nno', self.subtitles._to_iso639_2(name), name)
+        self.assertNotEqual(self.subtitles._to_iso639_2('nob'),
+                            self.subtitles._to_iso639_2('nno'))
+
     def test_converter_terminologic_result_is_canonicalized(self):
         self.use_converter(lambda language, _format: {
             'german': 'deu', 'ger': 'ger', 'fra': 'fra'}.get(language, ''))
