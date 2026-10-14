@@ -30,3 +30,31 @@ msgstr ""
 msgctxt "#32007"
 msgid "Leave empty to disable subtitle-name matching. Tracks marked as forced by Kodi remain eligible."
 msgstr ""
+
+msgctxt "#32008"
+msgid "Notify when no matching subtitle is found"
+msgstr ""
+
+msgctxt "#32009"
+msgid "Show one notice per Kodi session when no matching track is found or selection fails. Disabled: these outcomes appear only in the log."
+msgstr ""
+
+msgctxt "#32010"
+msgid "Remember manual subtitle corrections"
+msgstr ""
+
+msgctxt "#32011"
+msgid "After a manual change, leave subtitles alone for later episodes of the same library show. Other sources use file memory. Disable to ignore saved choices. Memory keeps up to 200 show and file records."
+msgstr ""
+
+msgctxt "#32012"
+msgid "No preferred subtitle language is available. Check Kodi's player language and subtitle settings."
+msgstr ""
+
+msgctxt "#32013"
+msgid "No matching subtitle is available. Your current subtitles remain unchanged."
+msgstr ""
+
+msgctxt "#32014"
+msgid "Subtitle selection failed. Check the Kodi log for details."
+msgstr ""

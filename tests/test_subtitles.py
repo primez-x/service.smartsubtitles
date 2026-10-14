@@ -1047,6 +1047,45 @@ class KeywordRankingTests(unittest.TestCase):
     def test_first_stream_wins_within_a_rank(self):
         self.assertEqual(0, self._pick(['Signs', 'Signs & Songs']))
 
+    def test_plain_signs_beats_sdh_and_commentary_at_same_rank(self):
+        for name in ('Signs SDH', 'Signs Hearing-Impaired', 'Signs Commentary'):
+            self.assertEqual(1, self._pick([name, 'Signs']), name)
+
+    def test_flags_break_ties_without_changing_primary_rank(self):
+        streams = [
+            {'index': 0, 'name': 'Signs', 'isimpaired': True},
+            {'index': 1, 'name': 'Signs'},
+            {'index': 2, 'name': 'Signs', 'isdefault': True},
+        ]
+        self.assertEqual(2, self.subtitles._best_candidate(
+            streams, self.KEYWORDS, set())[2]['index'])
+        streams[0]['isforced'] = True
+        self.assertEqual(0, self.subtitles._best_candidate(
+            streams, self.KEYWORDS, set())[2]['index'])
+
+    def test_custom_keyword_still_makes_commentary_eligible(self):
+        self.assertEqual(0, self._pick(['Commentary'], keywords=('commentary',)))
+
+    def test_filename_language_tokens_pass_the_language_filter(self):
+        for name in ('Movie.en.forced.srt', 'Movie_ENG_signs.srt',
+                     'Movie.pt-BR.forced.srt', 'English Signs'):
+            language = 'por' if 'pt-BR' in name else 'eng'
+            stream = {'index': 2, 'name': name, 'language': ''}
+            self.assertIsNotNone(self.subtitles._best_candidate(
+                [stream], self.KEYWORDS, {language}), name)
+
+    def test_filename_language_inference_rejects_substrings_and_ambiguity(self):
+        for name in ('Frenchman Signs', 'Movie.benforced.srt',
+                     'Movie.en.fr.forced.srt', '/en/Movie.forced.srt',
+                     'Movie.en123.forced.srt', 'Movie.漢en.forced.srt'):
+            self.assertIsNone(self.subtitles._best_candidate(
+                [{'index': 0, 'name': name}], self.KEYWORDS, {'eng'}), name)
+
+    def test_explicit_stream_language_overrides_filename(self):
+        self.assertIsNone(self.subtitles._best_candidate(
+            [{'index': 0, 'language': 'jpn', 'name': 'Movie.en.forced.srt'}],
+            self.KEYWORDS, {'eng'}))
+
     def test_custom_keywords_match_whole_words(self):
         self.assertEqual(1, self._pick(['Japanese', 'Lyrics [karaoke]'],
                                        keywords=('karaoke',)))
@@ -1152,6 +1191,69 @@ class NotificationSettingTests(unittest.TestCase):
         with mock.patch.object(self.subtitles, '_get_setting', return_value='false'):
             self.subtitles._notify_selected('English (Forced)')
         self.assertEqual([], self.calls)
+
+
+class PlaybackSnapshotTests(unittest.TestCase):
+    def setUp(self):
+        self.subtitles = load_subtitles_module()
+        self.subtitles._get_active_player_id = lambda: 1
+
+    def test_missing_or_malformed_properties_are_not_manual_observations(self):
+        good = {'subtitles': [], 'currentsubtitle': {}, 'subtitleenabled': False,
+                'currentaudiostream': {}}
+        for response in ({}, {'error': {'code': -1}}, {'result': []},
+                         {'result': dict(good, subtitles=['bad'])},
+                         {'result': dict(good, currentsubtitle=[])},
+                         {'result': dict(good, currentaudiostream='bad')},
+                         {'result': dict(good, subtitleenabled='false')}):
+            self.subtitles._jsonrpc = lambda *_args: response
+            self.assertIsNone(self.subtitles._get_playback_snapshot(), response)
+
+    def test_malformed_item_metadata_uses_file_fallback(self):
+        self.subtitles._jsonrpc = lambda *_args: {'result': {'item': ['bad']}}
+        self.assertEqual({}, self.subtitles._get_playing_item(1))
+
+
+class FailureNotificationTests(unittest.TestCase):
+    def setUp(self):
+        self.subtitles = load_subtitles_module()
+        self.properties = {}
+        self.notices = []
+        self.subtitles.xbmcgui.NOTIFICATION_WARNING = 2
+        self.subtitles.xbmcgui.Window = lambda _id: types.SimpleNamespace(
+            getProperty=lambda key: self.properties.get(key, ''),
+            setProperty=lambda key, value: self.properties.update({key: value}))
+        self.subtitles.xbmcgui.Dialog = lambda: types.SimpleNamespace(
+            notification=lambda *args: self.notices.append(args))
+        addon = types.SimpleNamespace(getLocalizedString=lambda number: str(number))
+        self.patch = mock.patch.dict(sys.modules, {
+            'xbmcaddon': types.SimpleNamespace(Addon=lambda _id: addon)})
+        self.patch.start()
+        self.addCleanup(self.patch.stop)
+
+    def test_undetermined_language_warns_once_across_service_restarts(self):
+        self.subtitles._warn_undetermined_language()
+        self.subtitles._warn_undetermined_language()
+        other = load_subtitles_module()
+        other.xbmcgui = self.subtitles.xbmcgui
+        other._warn_undetermined_language()
+        self.assertEqual(1, len(self.notices))
+
+    def test_no_match_notifications_default_off(self):
+        self.subtitles._get_setting = lambda _key: ''
+        self.subtitles.notify_selection_failure('no_match')
+        self.assertEqual([], self.notices)
+
+    def test_notification_setting_failure_does_not_fail_selection(self):
+        self.subtitles._get_setting = lambda _key: (_ for _ in ()).throw(RuntimeError('settings unavailable'))
+        self.subtitles.notify_selection_failure('no_match')
+        self.assertEqual([], self.notices)
+
+    def test_enabled_failures_share_one_session_notice(self):
+        self.subtitles._get_setting = lambda _key: 'true'
+        for result in ('selected', 'skip', 'no_match', 'no_streams', 'error'):
+            self.subtitles.notify_selection_failure(result)
+        self.assertEqual(1, len(self.notices))
 
 
 class PlexKodiConnectWarningTests(unittest.TestCase):

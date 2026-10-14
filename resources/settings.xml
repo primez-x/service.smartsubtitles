@@ -18,6 +18,16 @@
                     <default>true</default>
                     <control type="toggle" />
                 </setting>
+                <setting id="notify_no_match" type="boolean" label="32008" help="32009">
+                    <level>0</level>
+                    <default>false</default>
+                    <control type="toggle" />
+                </setting>
+                <setting id="remember_manual" type="boolean" label="32010" help="32011">
+                    <level>0</level>
+                    <default>true</default>
+                    <control type="toggle" />
+                </setting>
                 <setting id="keywords" type="string" label="32003" help="32007"> <!-- Track name keywords (comma-separated) -->
                     <level>0</level>
                     <default>signs,songs,forced</default>

@@ -5,7 +5,8 @@ from xml.etree import ElementTree
 
 SETTINGS_PATH = (Path(__file__).parents[1] / 'resources' / 'settings.xml')
 EXPECTED_SETTINGS = (
-    'enabled', 'respect_language', 'notify_selected', 'keywords')
+    'enabled', 'respect_language', 'notify_selected', 'notify_no_match',
+    'remember_manual', 'keywords')
 
 
 class SettingsSchemaTests(unittest.TestCase):
@@ -32,6 +33,13 @@ class SettingsSchemaTests(unittest.TestCase):
         self.assertIsNotNone(keywords)
         self.assertEqual(
             'true', keywords.findtext('constraints/allowempty'))
+
+    def test_failure_notices_are_opt_in_and_memory_can_be_disabled(self):
+        for key, default in (('notify_no_match', 'false'), ('remember_manual', 'true')):
+            setting = self.root.find("section/category/group/setting[@id='%s']" % key)
+            self.assertIsNotNone(setting)
+            self.assertEqual(default, setting.findtext('default'))
+            self.assertTrue(setting.get('help'))
 
 
 if __name__ == '__main__':

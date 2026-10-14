@@ -16,6 +16,7 @@ from __future__ import absolute_import, division, unicode_literals
 
 import json
 import re
+import threading
 
 import xbmc
 import xbmcgui
@@ -97,6 +98,7 @@ _NON_LANGUAGE_SUBTITLE_PREFS = ('', 'original', 'default', 'forced_only', 'none'
 _PKC_ADDON_ID = 'plugin.video.plexkodiconnect'
 _PKC_DEFERS_VERSION = (3, 12, 60)
 _pkc_warning_checked = False
+_notification_lock = threading.Lock()
 
 
 def _notify_selected(name):
@@ -114,6 +116,40 @@ def _notify_confirmed_selection(name):
     except Exception as error:  # pylint: disable=broad-except
         xbmc.log('Smart Subtitles: notification failed: %s' % error,
                  xbmc.LOGWARNING)
+
+
+def _notify_session_warning(property_name, message_id):
+    try:
+        with _notification_lock:
+            window = xbmcgui.Window(10000)
+            if window.getProperty(property_name):
+                return
+            import xbmcaddon
+            message = xbmcaddon.Addon('service.smartsubtitles').getLocalizedString(message_id)
+            xbmcgui.Dialog().notification('Smart Subtitles', message,
+                                          xbmcgui.NOTIFICATION_WARNING, 5000)
+            window.setProperty(property_name, 'true')
+    except Exception as error:  # pylint: disable=broad-except
+        xbmc.log('Smart Subtitles: warning notification failed: %s' % error,
+                 xbmc.LOGWARNING)
+
+
+def _warn_undetermined_language():
+    _notify_session_warning('SmartSubtitles.LanguageWarning', 32012)
+
+
+def notify_selection_failure(result):
+    if result not in ('no_match', 'no_streams', 'error'):
+        return
+    try:
+        enabled = _get_setting_bool('notify_no_match', default=False)
+    except Exception as error:  # pylint: disable=broad-except
+        xbmc.log('Smart Subtitles: notification setting unavailable: %s' % error,
+                 xbmc.LOGWARNING)
+        return
+    if enabled:
+        _notify_session_warning('SmartSubtitles.NoMatchWarning',
+                                32014 if result == 'error' else 32013)
 
 
 def warn_plexkodiconnect_interop():
@@ -187,6 +223,48 @@ def _get_subtitle_streams(playerid):
     )
 
 
+def _get_playback_snapshot():
+    playerid = _get_active_player_id()
+    if playerid is None:
+        return None
+    response = _jsonrpc('Player.GetProperties', {
+        'playerid': playerid,
+        'properties': ['subtitles', 'currentsubtitle', 'subtitleenabled',
+                       'currentaudiostream'],
+    })
+    props = response.get('result')
+    if (not isinstance(props, dict)
+            or not all(key in props for key in ('subtitles', 'currentsubtitle',
+                                               'subtitleenabled', 'currentaudiostream'))
+            or _get_active_player_id() != playerid):
+        return None
+    streams = props['subtitles']
+    current = props['currentsubtitle']
+    audio = props['currentaudiostream']
+    if (not isinstance(streams, list) or not all(isinstance(stream, dict) for stream in streams)
+            or not isinstance(current, dict) or not isinstance(audio, dict)
+            or type(props['subtitleenabled']) is not bool):
+        return None
+    current_stream = _unique_stream_for_index(streams, current.get('index'))
+    return {
+        'playerid': playerid,
+        'environment': (playerid, audio.get('index'), audio.get('language'),
+                        audio.get('name'), tuple((stream.get('index'), _stream_signature(stream))
+                                                for stream in streams)),
+        'subtitle': (playerid, bool(props['subtitleenabled']), current.get('index'),
+                     _stream_signature(current_stream) if current_stream is not None else None),
+    }
+
+
+def _get_playing_item(playerid):
+    response = _jsonrpc('Player.GetItem', {
+        'playerid': playerid, 'properties': ['file', 'tvshowid', 'showtitle'],
+    })
+    result = response.get('result')
+    item = result.get('item') if isinstance(result, dict) else None
+    return item if isinstance(item, dict) else {}
+
+
 def _jsonrpc_succeeded(response):
     return (isinstance(response, dict) and 'error' not in response
             and response.get('result') == 'OK')
@@ -224,8 +302,9 @@ _NON_FORCED_RE = re.compile(r'\bnon[\s_.-]*forced\b')
 # "Full Subtitles (Dialogue + Signs & Songs)", are not signs/songs tracks.
 _FULL_TRACK_RE = re.compile(r'\b(?:full|dialog(?:ue)?)\b')
 _FORCED_WORD_RE = re.compile(r'\bforced\b')
+_ACCESSIBILITY_RE = re.compile(r'(?<![^\W_])(?:sdh|hearing[\s_.-]*impaired|commentary)(?![^\W_])')
 
-# Candidate ranks (lower wins; ties go to the earlier stream).
+# Candidate ranks (lower wins; accessibility and default flags break ties).
 RANK_FORCED_FLAG = 0   # Kodi's ``isforced`` stream flag
 RANK_SIGNS_SONGS = 1   # name matches a signs/songs keyword
 RANK_KEYWORD = 2       # name matches any other keyword
@@ -248,7 +327,7 @@ def _keyword_pattern(keyword):
     else:
         body = re.escape(keyword)
     # Lookarounds instead of \b so keywords like "[forced]" still work.
-    return re.compile(r'(?<!\w)' + body + r'(?!\w)')
+    return re.compile(r'(?<![^\W_])' + body + r'(?![^\W_])')
 
 
 def _clean_name(name):
@@ -418,6 +497,18 @@ def _stream_signature(stream):
     )
 
 
+def _stream_language(stream):
+    language = _to_iso639_2(stream.get('language', ''))
+    if language not in ('', 'und', 'unknown', 'undetermined', 'zxx'):
+        return language
+    # Use complete tokens in the basename. Ambiguous names remain unknown.
+    name = re.split(r'[/\\]', stream.get('name') or '')[-1].lower()
+    tokens = re.split(r'[\W_]+', name)
+    codes = {_LANG_TO_ISO639_2[token] for token in tokens
+             if token in _LANG_TO_ISO639_2}
+    return codes.pop() if len(codes) == 1 else ''
+
+
 def _observe_subtitle_state(attempt_state, playerid, sub_enabled):
     previous = attempt_state.get('last_subtitle_state')
     current = (playerid, bool(sub_enabled))
@@ -431,7 +522,7 @@ def _current_subtitle_policy(streams, current, sub_enabled,
     current_stream = _stream_for_index(streams, current.get('index'))
     if current_stream is None or not sub_enabled:
         return 'continue', lang_filter, False
-    current_lang = _to_iso639_2(current_stream.get('language', ''))
+    current_lang = _stream_language(current_stream)
     if not lang_filter or current_lang in lang_filter:
         xbmc.log('Smart Subtitles: subtitle already active in preferred '
                  'language (index=%s, lang=%s), not overriding'
@@ -453,14 +544,19 @@ def _current_subtitle_policy(streams, current, sub_enabled,
 
 def _best_candidate(streams, keywords, lang_filter):
     best = None
+    best_key = None
     for position, stream in enumerate(streams):
-        stream_lang = _to_iso639_2(stream.get('language', ''))
+        stream_lang = _stream_language(stream)
         rank = _candidate_rank(stream, keywords)
         if lang_filter and stream_lang not in lang_filter:
             continue
         if rank is None:
             continue
-        if best is None or (rank, position) < best[:2]:
+        penalty = bool(stream.get('isimpaired') or
+                       _ACCESSIBILITY_RE.search((stream.get('name') or '').lower()))
+        key = (rank, penalty, not bool(stream.get('isdefault')), position)
+        if best_key is None or key < best_key:
+            best_key = key
             best = (rank, position, stream, stream_lang)
     return best
 
@@ -519,6 +615,8 @@ def select_signs_songs_track(should_stop=None, attempt_state=None):
                 if should_stop is not None and should_stop():
                     return 'cancelled'
                 attempt_state.pop('pending_selection', None)
+                attempt_state['automatic_selection'] = (
+                    playerid, True, pending['index'], pending['signature'])
                 _notify_confirmed_selection(
                     pending['name'] or pending['stream_lang']
                     or str(pending['index']))
@@ -546,6 +644,7 @@ def select_signs_songs_track(should_stop=None, attempt_state=None):
         xbmc.log('Smart Subtitles: could not determine preferred subtitle '
                  'language from Kodi settings — language filter inactive',
                  xbmc.LOGWARNING)
+        _warn_undetermined_language()
     lang_filter = preferred if respect_lang else set()
     keywords = _get_keywords()
     decision, lang_filter, _replacing = _current_subtitle_policy(
@@ -650,5 +749,6 @@ def select_signs_songs_track(should_stop=None, attempt_state=None):
             or _stream_signature(confirmed_stream) != signature):
         return 'retry'
     attempt_state.pop('pending_selection', None)
+    attempt_state['automatic_selection'] = (playerid, True, index, signature)
     _notify_confirmed_selection(name or stream_lang or str(index))
     return 'selected'

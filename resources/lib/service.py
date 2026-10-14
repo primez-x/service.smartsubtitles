@@ -20,7 +20,12 @@ class SmartSubtitlesMonitor(xbmc.Monitor):
 
     def run(self):
         """Main service loop. Blocks until Kodi requests abort."""
-        self.waitForAbort()
+        while not self.waitForAbort(0.5):
+            try:
+                self.player.poll()
+            except Exception as error:  # pylint: disable=broad-except
+                xbmc.log('Smart Subtitles: playback observation failed: %s'
+                         % error, xbmc.LOGERROR)
         xbmc.log('Smart Subtitles: service stopping', xbmc.LOGINFO)
         self.player._cancel_timer()  # pylint: disable=protected-access
         del self.player
