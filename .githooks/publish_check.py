@@ -372,12 +372,9 @@ def ci():
         parent = git("rev-parse", "-q", "--verify", "%s^" % commit, check=False)
         base = parent.stdout.decode().strip() if parent.returncode == 0 else None
         previous = version_at(base) if base else None
-    # Not a release: only non-shipped files changed and the published version
-    # is the one this commit still carries (the publish keeps that zip).
+    # Classify the pushed range. Publication can lag behind a test-only correction.
     release = (previous is None or is_release(base, commit)
-               or compare_versions(_version, previous) != 0
-               or (published_version is not None
-                   and compare_versions(_version, published_version) != 0))
+               or compare_versions(_version, previous) != 0)
     check_commit(commit, config, previous, local=False,
                  already_published=published_sha == commit,
                  minimum_version=published_version, release=release)

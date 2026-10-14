@@ -225,6 +225,179 @@ class SelectionTests(unittest.TestCase):
         set_sub.assert_called_once_with(1, 2, None)
         self.assertEqual(['Signs'], self.notifications)
 
+    def test_identical_metadata_uses_fresh_snapshot_index(self):
+        streams = [
+            {'index': 0, 'language': 'eng', 'name': 'Signs & Songs'},
+            {'index': 1, 'language': 'eng', 'name': 'Signs & Songs'},
+        ]
+        reordered = [streams[1], streams[0]]
+        subtitles = self.subtitles
+        with mock.patch.object(subtitles, '_get_setting_bool',
+                               return_value=True), \
+                mock.patch.object(subtitles, '_get_active_player_id',
+                                  return_value=1), \
+                mock.patch.object(subtitles, '_get_subtitle_streams',
+                                  side_effect=[
+                                      (streams, {}, False),
+                                      (reordered, {}, False),
+                                      (reordered, {'index': 1}, True)]), \
+                mock.patch.object(subtitles, '_get_keywords',
+                                  return_value=['signs', 'songs']), \
+                mock.patch.object(subtitles, '_get_preferred_languages',
+                                  return_value=({'eng'}, {'eng'})), \
+                mock.patch.object(subtitles, '_set_subtitle',
+                                  return_value=True) as set_sub, \
+                mock.patch.object(subtitles, '_notify_selected',
+                                  side_effect=self.notifications.append):
+            result = subtitles.select_signs_songs_track()
+
+        self.assertEqual('selected', result)
+        set_sub.assert_called_once_with(1, 1, None)
+        self.assertEqual(['Signs & Songs'], self.notifications)
+
+    def test_identical_sibling_index_does_not_confirm_immediate_readback(self):
+        streams = [
+            {'index': 0, 'language': 'eng', 'name': 'Signs & Songs'},
+            {'index': 1, 'language': 'eng', 'name': 'Signs & Songs'},
+        ]
+        subtitles = self.subtitles
+        with mock.patch.object(subtitles, '_get_setting_bool',
+                               return_value=True), \
+                mock.patch.object(subtitles, '_get_active_player_id',
+                                  return_value=1), \
+                mock.patch.object(subtitles, '_get_subtitle_streams',
+                                  side_effect=[
+                                      (streams, {}, False),
+                                      (streams, {}, False),
+                                      (streams, {'index': 1}, True)]), \
+                mock.patch.object(subtitles, '_get_keywords',
+                                  return_value=['signs', 'songs']), \
+                mock.patch.object(subtitles, '_get_preferred_languages',
+                                  return_value=({'eng'}, {'eng'})), \
+                mock.patch.object(subtitles, '_set_subtitle',
+                                  return_value=True) as set_sub, \
+                mock.patch.object(subtitles, '_notify_selected',
+                                  side_effect=self.notifications.append):
+            result = subtitles.select_signs_songs_track()
+
+        self.assertEqual('retry', result)
+        set_sub.assert_called_once_with(1, 0, None)
+        self.assertEqual([], self.notifications)
+
+    def test_delayed_duplicate_readback_confirms_only_chosen_index(self):
+        streams = [
+            {'index': 0, 'language': 'eng', 'name': 'Signs & Songs'},
+            {'index': 1, 'language': 'eng', 'name': 'Signs & Songs'},
+        ]
+        subtitles = self.subtitles
+        attempt_state = {}
+        with mock.patch.object(subtitles, '_get_setting_bool',
+                               return_value=True), \
+                mock.patch.object(subtitles, '_get_active_player_id',
+                                  return_value=1), \
+                mock.patch.object(subtitles, '_get_subtitle_streams',
+                                  side_effect=[
+                                      (streams, {}, False),
+                                      (streams, {}, False),
+                                      (streams, {}, False),
+                                      (streams, {'index': 0}, True)]), \
+                mock.patch.object(subtitles, '_get_keywords',
+                                  return_value=['signs', 'songs']), \
+                mock.patch.object(subtitles, '_get_preferred_languages',
+                                  return_value=({'eng'}, {'eng'})), \
+                mock.patch.object(subtitles, '_set_subtitle',
+                                  return_value=True) as set_sub, \
+                mock.patch.object(subtitles, '_notify_selected',
+                                  side_effect=self.notifications.append):
+            first_result = subtitles.select_signs_songs_track(
+                None, attempt_state)
+            second_result = subtitles.select_signs_songs_track(
+                None, attempt_state)
+
+        self.assertEqual('retry', first_result)
+        self.assertEqual('selected', second_result)
+        set_sub.assert_called_once_with(1, 0, None)
+        self.assertEqual(['Signs & Songs'], self.notifications)
+
+    def test_manual_sibling_index_after_pending_set_is_not_confirmed(self):
+        streams = [
+            {'index': 0, 'language': 'eng', 'name': 'Signs & Songs'},
+            {'index': 1, 'language': 'eng', 'name': 'Signs & Songs'},
+        ]
+        subtitles = self.subtitles
+        attempt_state = {}
+        with mock.patch.object(subtitles, '_get_setting_bool',
+                               return_value=True), \
+                mock.patch.object(subtitles, '_get_active_player_id',
+                                  return_value=1), \
+                mock.patch.object(subtitles, '_get_subtitle_streams',
+                                  side_effect=[
+                                      (streams, {}, False),
+                                      (streams, {}, False),
+                                      (streams, {}, False),
+                                      (streams, {'index': 1}, True)]), \
+                mock.patch.object(subtitles, '_get_keywords',
+                                  return_value=['signs', 'songs']), \
+                mock.patch.object(subtitles, '_get_preferred_languages',
+                                  return_value=({'eng'}, {'eng'})), \
+                mock.patch.object(subtitles, '_set_subtitle',
+                                  return_value=True) as set_sub, \
+                mock.patch.object(subtitles, '_notify_selected',
+                                  side_effect=self.notifications.append):
+            first_result = subtitles.select_signs_songs_track(
+                None, attempt_state)
+            second_result = subtitles.select_signs_songs_track(
+                None, attempt_state)
+
+        self.assertEqual('retry', first_result)
+        self.assertEqual('skip', second_result)
+        set_sub.assert_called_once_with(1, 0, None)
+        self.assertEqual([], self.notifications)
+
+    def test_duplicate_current_index_keeps_retry_guard(self):
+        streams = [
+            {'index': 0, 'language': 'eng', 'name': 'Signs & Songs'},
+            {'index': 0, 'language': 'eng', 'name': 'Signs & Songs'},
+        ]
+        result, set_sub, _dis_sub = self._run(
+            streams, {}, False, keywords=('signs', 'songs'))
+
+        self.assertEqual('retry', result)
+        set_sub.assert_not_called()
+
+    def test_candidate_missing_from_fresh_snapshot_retries_without_write(self):
+        initial = [{'index': 0, 'language': 'eng', 'name': 'Signs & Songs'}]
+        fresh = [{'index': 0, 'language': 'eng', 'name': 'English'}]
+        subtitles = self.subtitles
+        with mock.patch.object(subtitles, '_get_setting_bool',
+                               return_value=True), \
+                mock.patch.object(subtitles, '_get_active_player_id',
+                                  return_value=1), \
+                mock.patch.object(subtitles, '_get_subtitle_streams',
+                                  side_effect=[
+                                      (initial, {}, False),
+                                      (fresh, {}, False)]), \
+                mock.patch.object(subtitles, '_get_keywords',
+                                  return_value=['signs', 'songs']), \
+                mock.patch.object(subtitles, '_get_preferred_languages',
+                                  return_value=({'eng'}, {'eng'})), \
+                mock.patch.object(subtitles, '_set_subtitle') as set_sub:
+            result = subtitles.select_signs_songs_track()
+
+        self.assertEqual('retry', result)
+        set_sub.assert_not_called()
+
+    def test_active_preferred_duplicate_remains_user_choice(self):
+        streams = [
+            {'index': 0, 'language': 'eng', 'name': 'Signs & Songs'},
+            {'index': 1, 'language': 'eng', 'name': 'Signs & Songs'},
+        ]
+        result, set_sub, _dis_sub = self._run(
+            streams, {'index': 1}, True, keywords=('signs', 'songs'))
+
+        self.assertEqual('skip', result)
+        set_sub.assert_not_called()
+
     def test_late_user_subtitle_choice_is_not_overridden(self):
         streams = [
             {'index': 0, 'language': 'eng', 'name': 'English'},

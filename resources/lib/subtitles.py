@@ -400,6 +400,14 @@ def _stream_for_index(streams, index):
     return None
 
 
+def _unique_stream_for_index(streams, index):
+    """Return the stream for a unique Kodi index, or None."""
+    if index is None:
+        return None
+    matching = [stream for stream in streams if stream.get('index') == index]
+    return matching[0] if len(matching) == 1 else None
+
+
 def _stream_signature(stream):
     return (
         _to_iso639_2(stream.get('language', '')),
@@ -502,19 +510,22 @@ def select_signs_songs_track(should_stop=None, attempt_state=None):
             current_stream = _stream_for_index(streams, current.get('index'))
             current_signature = (_stream_signature(current_stream)
                                  if current_stream is not None else None)
-            if (sub_enabled and current_signature == pending['signature']):
-                matching = [stream for stream in streams
-                            if _stream_signature(stream) == pending['signature']]
-                if len(matching) == 1:
-                    if should_stop is not None and should_stop():
-                        return 'cancelled'
-                    attempt_state.pop('pending_selection', None)
-                    _notify_confirmed_selection(
-                        pending['name'] or pending['stream_lang']
-                        or str(pending['index']))
-                    return 'selected'
+            pending_stream = _unique_stream_for_index(
+                streams, pending['index'])
+            if (sub_enabled and current.get('index') == pending['index']
+                    and pending_stream is not None
+                    and _stream_signature(pending_stream)
+                    == pending['signature']):
+                if should_stop is not None and should_stop():
+                    return 'cancelled'
+                attempt_state.pop('pending_selection', None)
+                _notify_confirmed_selection(
+                    pending['name'] or pending['stream_lang']
+                    or str(pending['index']))
+                return 'selected'
             unchanged = (
-                current_signature == pending['previous_signature']
+                current.get('index') == pending['previous_index']
+                and current_signature == pending['previous_signature']
                 and sub_enabled == pending['previous_enabled'])
             if unchanged:
                 return 'retry'
@@ -580,12 +591,8 @@ def select_signs_songs_track(should_stop=None, attempt_state=None):
         return 'retry'
     _rank, _position, stream, stream_lang = fresh_best
     signature = _stream_signature(stream)
-    matching = [candidate for candidate in fresh_streams
-                if _stream_signature(candidate) == signature]
-    if len(matching) != 1:
-        return 'retry'
     index = stream.get('index')
-    if index is None:
+    if _unique_stream_for_index(fresh_streams, index) is None:
         return 'retry'
     name = stream.get('name', '')
     if should_stop is not None and should_stop():
@@ -626,6 +633,7 @@ def select_signs_songs_track(should_stop=None, attempt_state=None):
         'name': name,
         'stream_lang': stream_lang,
         'index': index,
+        'previous_index': fresh_current.get('index'),
         'previous_signature': previous_signature,
         'previous_enabled': fresh_enabled,
     }
@@ -636,13 +644,10 @@ def select_signs_songs_track(should_stop=None, attempt_state=None):
         return 'cancelled'
     if _get_active_player_id() != playerid:
         return 'retry'
-    confirmed_stream = _stream_for_index(
-        confirmed_streams, confirmed_current.get('index'))
-    confirmed_matches = [candidate for candidate in confirmed_streams
-                         if _stream_signature(candidate) == signature]
-    if (not confirmed_enabled or confirmed_stream is None
-            or _stream_signature(confirmed_stream) != signature
-            or len(confirmed_matches) != 1):
+    confirmed_stream = _unique_stream_for_index(confirmed_streams, index)
+    if (not confirmed_enabled or confirmed_current.get('index') != index
+            or confirmed_stream is None
+            or _stream_signature(confirmed_stream) != signature):
         return 'retry'
     attempt_state.pop('pending_selection', None)
     _notify_confirmed_selection(name or stream_lang or str(index))
