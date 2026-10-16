@@ -202,12 +202,20 @@ def _jsonrpc(method, params=None):
         return {}
 
 
-def _get_active_player_id():
+def _get_active_players():
     result = _jsonrpc('Player.GetActivePlayers')
-    for player in result.get('result', []) or []:
+    return result.get('result', []) or []
+
+
+def _get_active_player_id():
+    for player in _get_active_players():
         if player.get('type') == 'video':
             return player.get('playerid')
     return None
+
+
+def _has_active_audio_player():
+    return any(player.get('type') == 'audio' for player in _get_active_players())
 
 
 def _get_subtitle_streams(playerid):
@@ -571,7 +579,8 @@ def select_signs_songs_track(should_stop=None, attempt_state=None):
       'selected'  — found and selected a matching track
       'no_match'  — scanned streams, none matched in preferred language
       'disabled'  — addon disabled in settings
-      'no_player' — no active video player
+      'no_player' — no active video player reported yet
+      'audio_only' — audio playback, so subtitle selection does not apply
       'skip'      — user/Kodi already made a subtitle choice
       'retry'     — stream data or subtitle change needs another attempt
       'cancelled' — should_stop() turned true during an attempt
@@ -584,7 +593,10 @@ def select_signs_songs_track(should_stop=None, attempt_state=None):
 
     playerid = _get_active_player_id()
     if playerid is None:
-        xbmc.log('Smart Subtitles: no active video player', xbmc.LOGINFO)
+        if _has_active_audio_player():
+            xbmc.log('Smart Subtitles: audio playback, skipping', xbmc.LOGDEBUG)
+            return 'audio_only'
+        xbmc.log('Smart Subtitles: no active video player yet', xbmc.LOGDEBUG)
         return 'no_player'
 
     streams, current, sub_enabled = _get_subtitle_streams(playerid)

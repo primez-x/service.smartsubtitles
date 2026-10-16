@@ -49,7 +49,7 @@ class SmartSubtitlesPlayer(xbmc.Player):
         xbmc.log('Smart Subtitles: player monitor created', xbmc.LOGINFO)
 
     def onAVStarted(self):  # pylint: disable=invalid-name
-        xbmc.log('Smart Subtitles: onAVStarted fired', xbmc.LOGINFO)
+        xbmc.log('Smart Subtitles: onAVStarted fired', xbmc.LOGDEBUG)
         self._cancel_timer()
         playing_file = self._current_file()
         with self._lock:
@@ -174,6 +174,10 @@ class SmartSubtitlesPlayer(xbmc.Player):
             self._manual_candidate = None
 
     def _current_file(self):
+        # Kodi logs a C++ exception when getPlayingFile() is called while
+        # stopped, even though Python catches the RuntimeError.
+        if not self.isPlaying():
+            return None
         try:
             return self.getPlayingFile()
         except RuntimeError:
@@ -236,7 +240,8 @@ class SmartSubtitlesPlayer(xbmc.Player):
                 result = 'retry'
             if result not in ('retry', 'skip') or skips >= 2:
                 xbmc.log('Smart Subtitles: selection finished after %d attempt(s) (%s)' % (
-                    attempts, result), xbmc.LOGINFO)
+                    attempts, result),
+                    xbmc.LOGDEBUG if result == 'audio_only' else xbmc.LOGINFO)
                 if should_stop():
                     return
                 self._finish_selection(result, playing_file, cancel, selection_state)

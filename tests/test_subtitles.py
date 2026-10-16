@@ -113,6 +113,21 @@ class LanguageFallbackTests(unittest.TestCase):
         self.assertEqual('klingon', self.subtitles._to_iso639_2('Klingon'))
 
 
+class ActivePlayerTests(unittest.TestCase):
+    def setUp(self):
+        self.subtitles = load_subtitles_module()
+        self.subtitles._get_setting_bool = lambda _key, default=True: True
+
+    def test_audio_player_returns_audio_only(self):
+        self.subtitles._jsonrpc = lambda _method, _params=None: {
+            'result': [{'type': 'audio', 'playerid': 0}]}
+        self.assertEqual('audio_only', self.subtitles.select_signs_songs_track())
+
+    def test_no_active_player_stays_retryable(self):
+        self.subtitles._jsonrpc = lambda _method, _params=None: {'result': []}
+        self.assertEqual('no_player', self.subtitles.select_signs_songs_track())
+
+
 class SelectionTests(unittest.TestCase):
     def setUp(self):
         self.subtitles = load_subtitles_module()

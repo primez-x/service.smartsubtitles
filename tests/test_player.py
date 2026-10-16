@@ -17,8 +17,13 @@ SOURCE = Path(__file__).parents[1] / 'resources' / 'lib' / 'player.py'
 class FakePlayer(object):
     def __init__(self):
         self.playing_file = 'episode1.mkv'
+        self.get_playing_file_calls = 0
+
+    def isPlaying(self):
+        return self.playing_file is not None
 
     def getPlayingFile(self):
+        self.get_playing_file_calls += 1
         if self.playing_file is None:
             raise RuntimeError('not playing')
         return self.playing_file
@@ -64,6 +69,7 @@ class AdvancingEvent(object):
 
 def load_player_module(select, subtitle_module=None, corrections_module=None):
     xbmc = types.SimpleNamespace(
+        LOGDEBUG=0,
         LOGINFO=1,
         Player=FakePlayer,
         Monitor=FakeMonitor,
@@ -165,6 +171,20 @@ class RetryTests(unittest.TestCase):
         player._select_with_retry(threading.Event(), 'episode1.mkv')
         self.assertEqual(2, len(self.calls))
         self.assertEqual('selected|episode1.mkv', HOME.properties['SmartSubtitles.Result'])
+
+    def test_audio_only_is_final_after_one_attempt(self):
+        player = self._player(['audio_only', 'selected'])
+        player.playing_file = 'song.mp3'
+        player._select_with_retry(threading.Event(), 'song.mp3')
+        self.assertEqual(1, len(self.calls))
+        self.assertEqual('audio_only|song.mp3', HOME.properties['SmartSubtitles.Result'])
+
+    def test_current_file_avoids_get_playing_file_when_stopped(self):
+        player = self._player(['selected'])
+        player.playing_file = None
+        player.get_playing_file_calls = 0
+        self.assertIsNone(player._current_file())
+        self.assertEqual(0, player.get_playing_file_calls)
 
     def test_retries_for_streams_arriving_after_two_seconds(self):
         player_state = {}
